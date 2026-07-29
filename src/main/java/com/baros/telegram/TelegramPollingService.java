@@ -1,6 +1,5 @@
 package com.baros.telegram;
 
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
@@ -12,18 +11,18 @@ public class TelegramPollingService {
 
     private final TelegramClient telegramClient;
     private final TelegramCommandHandler commandHandler;
-    private final String allowedChatId;
+    private final ChatSubscriberService chatSubscriberService;
 
     private long offset = 0;
 
     public TelegramPollingService(
             TelegramClient telegramClient,
             TelegramCommandHandler commandHandler,
-            @Value("${telegram.allowed-chat-id}") String allowedChatId
+            ChatSubscriberService chatSubscriberService
     ) {
         this.telegramClient = telegramClient;
         this.commandHandler = commandHandler;
-        this.allowedChatId = allowedChatId;
+        this.chatSubscriberService = chatSubscriberService;
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -52,8 +51,8 @@ public class TelegramPollingService {
 
                     handleUpdate(update);
                 }
-            } catch (Exception e) {
-                System.out.println("Telegram polling error: " + e.getMessage());
+            } catch (Exception exception) {
+                System.out.println("Telegram polling error: " + exception.getMessage());
                 sleep(3000);
             }
         }
@@ -67,23 +66,12 @@ public class TelegramPollingService {
         Long chatId = update.message().chat().id();
         String text = update.message().text();
 
-        System.out.println("Telegram message from chatId=" + chatId + ": " + text);
+        chatSubscriberService.register(chatId);
 
-        if (!isAllowed(chatId)) {
-            System.out.println("Ignored message from unauthorized chatId=" + chatId);
-            return;
-        }
+        System.out.println("Telegram message from chatId=" + chatId + ": " + text);
 
         String answer = commandHandler.handle(text);
         telegramClient.sendMessage(chatId, answer);
-    }
-
-    private boolean isAllowed(Long chatId) {
-        if (allowedChatId == null || allowedChatId.isBlank()) {
-            return true;
-        }
-
-        return allowedChatId.equals(String.valueOf(chatId));
     }
 
     private void sleep(long millis) {

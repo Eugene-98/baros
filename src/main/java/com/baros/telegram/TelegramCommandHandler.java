@@ -76,12 +76,12 @@ public class TelegramCommandHandler {
     private String handleMonth(String[] parts) {
         if (parts.length < 2) {
             return """
-                    Укажи месяц.
+                Укажи месяц.
 
-                    Примеры:
-                    /month 2026-07
-                    /month 07.2026
-                    """;
+                Примеры:
+                /month 2026-07
+                /month 07.2026
+                """;
         }
 
         try {
@@ -89,12 +89,12 @@ public class TelegramCommandHandler {
             return salesAnalyticsService.formatMonthSummary(month);
         } catch (DateTimeParseException exception) {
             return """
-                    Не понял месяц.
+                Не понял месяц.
 
-                    Используй один из форматов:
-                    /month 2026-07
-                    /month 07.2026
-                    """;
+                Используй один из форматов:
+                /month 2026-07
+                /month 07.2026
+                """;
         }
     }
 

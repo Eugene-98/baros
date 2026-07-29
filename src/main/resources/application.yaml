@@ -19,4 +19,7 @@ bar:
 telegram:
   base-url: https://api.telegram.org
   bot-token: ${TELEGRAM_BOT_TOKEN:}
-  allowed-chat-id: ${TELEGRAM_ALLOWED_CHAT_ID:}
+  subscribers-file: data/subscribers.txt
+  daily-summary:
+    enabled: true
+    cron: "0 0 8 * * *"
