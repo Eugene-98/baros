@@ -29,18 +29,22 @@ public class TelegramCommandHandler {
         return switch (command) {
             case "/start", "/help" -> help();
             case "/today" -> salesAnalyticsService.formatTodaySummary();
+            case "/yesterday" -> salesAnalyticsService.formatYesterdaySummary();
+            case "/last" -> salesAnalyticsService.formatLastSale();
             default -> "Неизвестная команда.\n\n" + help();
         };
     }
 
     private String help() {
         return """
-                Baros Bot
+            Baros Bot
 
-                Доступные команды:
+            Доступные команды:
 
-                /today — отчет за текущий барный день
-                /help — список команд
-                """;
+            /today — отчет за текущий барный день
+            /yesterday — отчет за прошлый барный день
+            /last — последний чек за текущий барный день
+            /help — список команд
+            """;
     }
 }

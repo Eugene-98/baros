@@ -96,7 +96,66 @@ public class SalesAnalyticsService {
 
     public String formatTodaySummary() {
         SalesSummary summary = getTodaySummary();
+        return formatSummary(summary);
+    }
 
+    public String formatYesterdaySummary() {
+        LocalDate yesterdayBusinessDate = getCurrentBusinessDate().minusDays(1);
+        SalesSummary summary = getSummaryForBusinessDate(yesterdayBusinessDate);
+
+        return formatSummary(summary);
+    }
+
+    public String formatLastSale() {
+        SalesSummary summary = getTodaySummary();
+
+        if (summary.lastSale() == null) {
+            return "За текущий барный день чеков пока нет.";
+        }
+
+        EsuplSalesResponse.Sale sale = summary.lastSale();
+
+        String waiter = sale.user() == null ? "-" : sale.user().fullName();
+        String time = sale.eventDate() == null
+                ? "-"
+                : sale.eventDate()
+                .atZoneSameInstant(zoneId)
+                .format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm"));
+
+        StringBuilder text = new StringBuilder();
+
+        text.append("Последний чек за текущий барный день\n\n");
+        text.append("№ ").append(sale.orderNumber()).append("\n");
+        text.append("Время: ").append(time).append("\n");
+        text.append("Валовая сумма: ").append(money(sale.totalSum())).append("\n");
+        text.append("Сумма оплат: ").append(money(sale.paidAmount())).append("\n");
+        text.append("Скидка/списание: ").append(money(sale.totalDiscount())).append("\n");
+        text.append("Сотрудник: ").append(waiter).append("\n");
+
+        if (sale.table() != null) {
+            text.append("Стол: ").append(sale.table().name()).append("\n");
+        }
+
+        if (sale.items() != null && !sale.items().isEmpty()) {
+            text.append("\nПозиции:\n");
+
+            sale.items().stream()
+                    .limit(10)
+                    .forEach(item -> {
+                        String name = item.item() == null ? "Позиция" : item.item().name();
+
+                        text.append("- ")
+                                .append(name)
+                                .append(" × ")
+                                .append(item.quantity())
+                                .append("\n");
+                    });
+        }
+
+        return text.toString();
+    }
+
+    private String formatSummary(SalesSummary summary) {
         StringBuilder text = new StringBuilder();
 
         text.append("Отчет за барный день: ")
