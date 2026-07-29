@@ -45,19 +45,22 @@ public class EsuplClient {
                 .baseUrl(baseUrl)
                 .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + token)
                 .defaultHeader(HttpHeaders.ACCEPT, "application/json")
+                .codecs(configurer -> configurer
+                        .defaultCodecs()
+                        .maxInMemorySize(10 * 1024 * 1024)
+                )
                 .build();
     }
 
-    public List<EsuplSalesResponse.Sale> getSalesForBusinessDate(LocalDate businessDate) {
-        LocalDateTime start = businessDate.atTime(3, 0, 0);
-        LocalDateTime end = businessDate.plusDays(1).atTime(2, 59, 59);
-
+    public List<EsuplSalesResponse.Sale> getSalesForRange(LocalDateTime start, LocalDateTime end) {
         List<EsuplSalesResponse.Sale> result = new ArrayList<>();
 
         int page = 1;
-        int perPage = 100;
-        int currentPage = page;
+        int perPage = 50;
+
         while (true) {
+            int currentPage = page;
+
             EsuplSalesResponse response = webClient.get()
                     .uri(uriBuilder -> uriBuilder
                             .path("/teams/{teamId}/sales")
@@ -96,7 +99,13 @@ public class EsuplClient {
             page++;
         }
 
-
         return result;
+    }
+
+    public List<EsuplSalesResponse.Sale> getSalesForBusinessDate(LocalDate businessDate) {
+        LocalDateTime start = businessDate.atTime(3, 0, 0);
+        LocalDateTime end = businessDate.plusDays(1).atTime(2, 59, 59);
+
+        return getSalesForRange(start, end);
     }
 }

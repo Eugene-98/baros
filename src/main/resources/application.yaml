@@ -11,6 +11,10 @@ bar:
   time-zone: Europe/Minsk
   day-start-hour: 3
   currency: BYN
+  double:
+    label: Двойка
+    discount-names: Порча
+  other-discounts-label: Скидки
 
 telegram:
   base-url: https://api.telegram.org

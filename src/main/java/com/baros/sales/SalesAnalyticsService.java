@@ -10,12 +10,14 @@ import java.math.RoundingMode;
 import java.text.DecimalFormat;
 import java.text.DecimalFormatSymbols;
 import java.time.LocalDate;
+import java.time.YearMonth;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
-import java.time.format.DateTimeFormatter;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
+import java.util.stream.Collectors;
+import java.time.LocalDateTime;
 
 @Service
 public class SalesAnalyticsService {
@@ -24,186 +26,112 @@ public class SalesAnalyticsService {
     private final ZoneId zoneId;
     private final int dayStartHour;
     private final String currency;
+    private final String doubleLabel;
+    private final String otherDiscountsLabel;
+    private final Set<String> doubleDiscountNames;
 
     public SalesAnalyticsService(
             EsuplClient esuplClient,
             @Value("${bar.time-zone}") String timeZone,
             @Value("${bar.day-start-hour}") int dayStartHour,
-            @Value("${bar.currency}") String currency
+            @Value("${bar.currency}") String currency,
+            @Value("${bar.double.label}") String doubleLabel,
+            @Value("${bar.double.discount-names}") String doubleDiscountNames,
+            @Value("${bar.other-discounts-label}") String otherDiscountsLabel
     ) {
         this.esuplClient = esuplClient;
         this.zoneId = ZoneId.of(timeZone);
         this.dayStartHour = dayStartHour;
         this.currency = currency;
-    }
+        this.doubleLabel = doubleLabel;
+        this.otherDiscountsLabel = otherDiscountsLabel;
 
-    public SalesSummary getTodaySummary() {
-        LocalDate businessDate = getCurrentBusinessDate();
-        return getSummaryForBusinessDate(businessDate);
-    }
-
-    public SalesSummary getSummaryForBusinessDate(LocalDate businessDate) {
-        List<EsuplSalesResponse.Sale> sales = esuplClient.getSalesForBusinessDate(businessDate)
+        this.doubleDiscountNames = List.of(doubleDiscountNames.split(","))
                 .stream()
-                .filter(sale -> "sale".equals(sale.type()))
-                .filter(sale -> "closed".equals(sale.status()))
-                .filter(sale -> !sale.deleted())
-                .toList();
-
-        BigDecimal gross = sales.stream()
-                .map(EsuplSalesResponse.Sale::totalSum)
-                .filter(value -> value != null)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-
-        BigDecimal discounts = sales.stream()
-                .map(EsuplSalesResponse.Sale::totalDiscount)
-                .filter(value -> value != null)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-
-        BigDecimal revenue = sales.stream()
-                .map(EsuplSalesResponse.Sale::paidAmount)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-
-        long paidChecks = sales.stream()
-                .filter(sale -> sale.paidAmount().compareTo(BigDecimal.ZERO) > 0)
-                .count();
-
-        BigDecimal averageCheck = paidChecks == 0
-                ? BigDecimal.ZERO
-                : revenue.divide(BigDecimal.valueOf(paidChecks), 2, RoundingMode.HALF_UP);
-
-        Comparator<EsuplSalesResponse.Sale> byEventDate =
-                Comparator.comparing(
-                        EsuplSalesResponse.Sale::eventDate,
-                        Comparator.nullsFirst(Comparator.naturalOrder())
-                );
-
-        EsuplSalesResponse.Sale lastSale = sales.stream()
-                .max(byEventDate)
-                .orElse(null);
-
-        return new SalesSummary(
-                businessDate,
-                sales.size(),
-                paidChecks,
-                revenue,
-                gross,
-                discounts,
-                averageCheck,
-                lastSale
-        );
+                .map(this::normalize)
+                .collect(Collectors.toSet());
     }
 
     public String formatTodaySummary() {
-        SalesSummary summary = getTodaySummary();
-        return formatSummary(summary);
+        LocalDate businessDate = getCurrentBusinessDate();
+        return formatDaySummary(businessDate);
     }
 
     public String formatYesterdaySummary() {
-        LocalDate yesterdayBusinessDate = getCurrentBusinessDate().minusDays(1);
-        SalesSummary summary = getSummaryForBusinessDate(yesterdayBusinessDate);
-
-        return formatSummary(summary);
+        LocalDate businessDate = getCurrentBusinessDate().minusDays(1);
+        return formatDaySummary(businessDate);
     }
 
-    public String formatLastSale() {
-        SalesSummary summary = getTodaySummary();
-
-        if (summary.lastSale() == null) {
-            return "За текущий барный день чеков пока нет.";
-        }
-
-        EsuplSalesResponse.Sale sale = summary.lastSale();
-
-        String waiter = sale.user() == null ? "-" : sale.user().fullName();
-        String time = sale.eventDate() == null
-                ? "-"
-                : sale.eventDate()
-                .atZoneSameInstant(zoneId)
-                .format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm"));
-
-        StringBuilder text = new StringBuilder();
-
-        text.append("Последний чек за текущий барный день\n\n");
-        text.append("№ ").append(sale.orderNumber()).append("\n");
-        text.append("Время: ").append(time).append("\n");
-        text.append("Валовая сумма: ").append(money(sale.totalSum())).append("\n");
-        text.append("Сумма оплат: ").append(money(sale.paidAmount())).append("\n");
-        text.append("Скидка/списание: ").append(money(sale.totalDiscount())).append("\n");
-        text.append("Сотрудник: ").append(waiter).append("\n");
-
-        if (sale.table() != null) {
-            text.append("Стол: ").append(sale.table().name()).append("\n");
-        }
-
-        if (sale.items() != null && !sale.items().isEmpty()) {
-            text.append("\nПозиции:\n");
-
-            sale.items().stream()
-                    .limit(10)
-                    .forEach(item -> {
-                        String name = item.item() == null ? "Позиция" : item.item().name();
-
-                        text.append("- ")
-                                .append(name)
-                                .append(" × ")
-                                .append(item.quantity())
-                                .append("\n");
-                    });
-        }
-
-        return text.toString();
+    public String formatDaySummary(LocalDate businessDate) {
+        SalesSummary summary = getSummaryForBusinessDate(businessDate);
+        return formatSummary("Отчет за барный день: " + summary.businessDate(), summary);
     }
 
-    private String formatSummary(SalesSummary summary) {
-        StringBuilder text = new StringBuilder();
+    public String formatMonthSummary(YearMonth month) {
+        LocalDateTime start = month.atDay(1).atStartOfDay();
+        LocalDateTime end = month.atEndOfMonth().atTime(23, 59, 59);
 
-        text.append("Отчет за барный день: ")
-                .append(summary.businessDate())
-                .append("\n\n");
+        List<EsuplSalesResponse.Sale> sales = getCleanSalesForRange(start, end);
 
-        text.append("Фактическая выручка: ")
-                .append(money(summary.revenue()))
-                .append("\n");
+        SalesSummary monthSummary = buildSummary(month.atDay(1), sales);
 
-        text.append("Валовая сумма: ")
-                .append(money(summary.gross()))
-                .append("\n");
+        return formatSummary("Отчет за месяц: " + month, monthSummary);
+    }
 
-        text.append("Скидки/списания: ")
-                .append(money(summary.discounts()))
-                .append("\n\n");
+    public SalesSummary getSummaryForBusinessDate(LocalDate businessDate) {
+        List<EsuplSalesResponse.Sale> sales = getCleanSalesForBusinessDate(businessDate);
+        return buildSummary(businessDate, sales);
+    }
 
-        text.append("Чеков всего: ")
-                .append(summary.totalChecks())
-                .append("\n");
+    private List<EsuplSalesResponse.Sale> getCleanSalesForBusinessDate(LocalDate businessDate) {
+        return esuplClient.getSalesForBusinessDate(businessDate)
+                .stream()
+                .filter(this::isReportableSale)
+                .toList();
+    }
 
-        text.append("Оплаченных чеков: ")
-                .append(summary.paidChecks())
-                .append("\n");
-
-        text.append("Средний чек: ")
-                .append(money(summary.averageCheck()))
-                .append("\n");
-
-        if (summary.lastSale() != null) {
-            EsuplSalesResponse.Sale sale = summary.lastSale();
-
-            String waiter = sale.user() == null ? "-" : sale.user().fullName();
-            String time = sale.eventDate() == null
-                    ? "-"
-                    : sale.eventDate()
-                    .atZoneSameInstant(zoneId)
-                    .format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm"));
-
-            text.append("\nПоследний чек:\n");
-            text.append("№ ").append(sale.orderNumber()).append("\n");
-            text.append("Время: ").append(time).append("\n");
-            text.append("Сумма оплат: ").append(money(sale.paidAmount())).append("\n");
-            text.append("Сотрудник: ").append(waiter).append("\n");
+    private BigDecimal getDoubleAmount(EsuplSalesResponse.Sale sale) {
+        if (sale.totalDiscounts() == null) {
+            return BigDecimal.ZERO;
         }
 
-        return text.toString();
+        return sale.totalDiscounts()
+                .stream()
+                .filter(discount -> isDoubleDiscount(discount.name()))
+                .map(EsuplSalesResponse.TotalDiscount::amount)
+                .filter(amount -> amount != null)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    private BigDecimal getOtherDiscountsAmount(EsuplSalesResponse.Sale sale) {
+        if (sale.totalDiscounts() == null) {
+            return BigDecimal.ZERO;
+        }
+
+        return sale.totalDiscounts()
+                .stream()
+                .filter(discount -> !isDoubleDiscount(discount.name()))
+                .map(EsuplSalesResponse.TotalDiscount::amount)
+                .filter(amount -> amount != null)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    private boolean isDoubleDiscount(String discountName) {
+        if (discountName == null) {
+            return false;
+        }
+
+        return doubleDiscountNames.contains(normalize(discountName));
+    }
+
+    private String formatSummary(String title, SalesSummary summary) {
+        return title + "\n\n"
+                + "Продажи: " + money(summary.revenue()) + "\n"
+                + doubleLabel + ": " + money(summary.doubleAmount()) + "\n"
+                + otherDiscountsLabel + ": " + money(summary.otherDiscountsAmount()) + "\n\n"
+                + "Чеков всего: " + summary.totalChecks() + "\n"
+                + "Оплаченных чеков: " + summary.paidChecks() + "\n"
+                + "Средний чек: " + money(summary.averageCheck());
     }
 
     private LocalDate getCurrentBusinessDate() {
@@ -225,5 +153,72 @@ public class SalesAnalyticsService {
         DecimalFormat formatter = new DecimalFormat("#,##0.00", symbols);
 
         return formatter.format(value) + " " + currency;
+    }
+
+    private String normalize(String value) {
+        return value == null
+                ? ""
+                : value.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private List<EsuplSalesResponse.Sale> getCleanSalesForRange(LocalDateTime start, LocalDateTime end) {
+        return esuplClient.getSalesForRange(start, end)
+                .stream()
+                .filter(this::isReportableSale)
+                .toList();
+    }
+
+    private SalesSummary buildSummary(LocalDate businessDate, List<EsuplSalesResponse.Sale> sales) {
+        BigDecimal revenue = sales.stream()
+                .map(this::getNetSalesAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        BigDecimal doubleAmount = sales.stream()
+                .map(this::getDoubleAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        BigDecimal otherDiscountsAmount = sales.stream()
+                .map(this::getOtherDiscountsAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        long paidChecks = sales.stream()
+                .filter(sale -> sale.paidAmount().compareTo(BigDecimal.ZERO) > 0)
+                .count();
+
+        BigDecimal averageCheck = sales.isEmpty()
+                ? BigDecimal.ZERO
+                : revenue.divide(BigDecimal.valueOf(sales.size()), 2, RoundingMode.HALF_UP);
+
+        return new SalesSummary(
+                businessDate,
+                sales.size(),
+                paidChecks,
+                revenue,
+                doubleAmount,
+                otherDiscountsAmount,
+                averageCheck
+        );
+    }
+
+    private BigDecimal getNetSalesAmount(EsuplSalesResponse.Sale sale) {
+        BigDecimal totalSum = safe(sale.totalSum());
+
+        BigDecimal totalDiscount = sale.totalDiscount() != null
+                ? sale.totalDiscount()
+                : getDoubleAmount(sale).add(getOtherDiscountsAmount(sale));
+
+        return totalSum.subtract(totalDiscount);
+    }
+
+    private BigDecimal safe(BigDecimal value) {
+        return value == null ? BigDecimal.ZERO : value;
+    }
+
+    private boolean isReportableSale(EsuplSalesResponse.Sale sale) {
+        if (sale == null) {
+            return false;
+        }
+
+        return !sale.deleted();
     }
 }
