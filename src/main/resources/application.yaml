@@ -1,0 +1,18 @@
+spring:
+  application:
+    name: baros
+
+esupl:
+  base-url: https://api.esupl.com/v1
+  team-id: 12017
+  token: ${ESUPL_API_TOKEN}
+
+bar:
+  time-zone: Europe/Minsk
+  day-start-hour: 3
+  currency: BYN
+
+telegram:
+  base-url: https://api.telegram.org
+  bot-token: ${TELEGRAM_BOT_TOKEN:}
+  allowed-chat-id: ${TELEGRAM_ALLOWED_CHAT_ID:}
