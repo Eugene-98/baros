@@ -1,0 +1,9 @@
+.git
+.idea
+target
+data
+.env
+*.log
+*.iml
+.DS_Store
+Thumbs.db

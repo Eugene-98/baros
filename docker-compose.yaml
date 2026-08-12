@@ -1,0 +1,13 @@
+services:
+  baros-bot:
+    build: .
+    container_name: baros-bot
+    restart: unless-stopped
+
+    environment:
+      ESUPL_API_TOKEN: ${ESUPL_API_TOKEN}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TZ: Europe/Minsk
+
+    volumes:
+      - ./data:/app/data

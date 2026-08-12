@@ -1,12 +1,14 @@
 HELP.md
 target/
-.mvn/wrapper/maven-wrapper.jar
-!**/src/main/**/target/
-!**/src/test/**/target/
+.idea/
+*.iml
 
-data/
 .env
+data/
 *.log
+
+.DS_Store
+Thumbs.db
 
 ### STS ###
 .apt_generated
