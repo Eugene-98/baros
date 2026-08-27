@@ -78,6 +78,16 @@ public class SalesAnalyticsService {
         return formatSummary("Отчет за месяц: " + month, monthSummary);
     }
 
+    public String formatCurrentMonthSummary() {
+        YearMonth currentMonth = YearMonth.now(zoneId);
+        return formatMonthSummary(currentMonth);
+    }
+
+    public String formatPreviousMonthSummary() {
+        YearMonth previousMonth = YearMonth.now(zoneId).minusMonths(1);
+        return formatMonthSummary(previousMonth);
+    }
+
     public SalesSummary getSummaryForBusinessDate(LocalDate businessDate) {
         List<EsuplSalesResponse.Sale> sales = getCleanSalesForBusinessDate(businessDate);
         return buildSummary(businessDate, sales);

@@ -69,17 +69,20 @@ public class TelegramClient {
         return new ReplyKeyboardMarkup(
                 List.of(
                         List.of(
-                                new KeyboardButton("/today"),
-                                new KeyboardButton("/yesterday")
+                                new KeyboardButton("📊 Сегодня"),
+                                new KeyboardButton("📆 Вчера")
                         ),
                         List.of(
-                                new KeyboardButton("/month"),
-                                new KeyboardButton("/help")
+                                new KeyboardButton("🗓 Этот месяц"),
+                                new KeyboardButton("⬅️ Прошлый месяц")
+                        ),
+                        List.of(
+                                new KeyboardButton("ℹ️ Помощь")
                         )
                 ),
                 true,
                 false,
-                "Выбери отчет"
+                "Выбери отчет или введи месяц"
         );
     }
 

@@ -7,7 +7,9 @@ import java.time.LocalDate;
 import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.util.Arrays;
 import java.util.Locale;
+import java.util.Map;
 
 @Service
 public class TelegramCommandHandler {
@@ -17,6 +19,33 @@ public class TelegramCommandHandler {
 
     private static final DateTimeFormatter RU_MONTH_FORMAT =
             DateTimeFormatter.ofPattern("MM.yyyy");
+
+    private static final Map<String, Integer> RU_MONTHS = Map.ofEntries(
+            Map.entry("январь", 1),
+            Map.entry("января", 1),
+            Map.entry("февраль", 2),
+            Map.entry("февраля", 2),
+            Map.entry("март", 3),
+            Map.entry("марта", 3),
+            Map.entry("апрель", 4),
+            Map.entry("апреля", 4),
+            Map.entry("май", 5),
+            Map.entry("мая", 5),
+            Map.entry("июнь", 6),
+            Map.entry("июня", 6),
+            Map.entry("июль", 7),
+            Map.entry("июля", 7),
+            Map.entry("август", 8),
+            Map.entry("августа", 8),
+            Map.entry("сентябрь", 9),
+            Map.entry("сентября", 9),
+            Map.entry("октябрь", 10),
+            Map.entry("октября", 10),
+            Map.entry("ноябрь", 11),
+            Map.entry("ноября", 11),
+            Map.entry("декабрь", 12),
+            Map.entry("декабря", 12)
+    );
 
     private final SalesAnalyticsService salesAnalyticsService;
 
@@ -29,8 +58,34 @@ public class TelegramCommandHandler {
             return help();
         }
 
-        String[] parts = text.trim().split("\\s+");
+        String rawText = text.trim();
+        String normalizedText = rawText.toLowerCase(Locale.ROOT);
 
+        return switch (normalizedText) {
+            case "📊 сегодня", "сегодня" -> salesAnalyticsService.formatTodaySummary();
+            case "📆 вчера", "вчера" -> salesAnalyticsService.formatYesterdaySummary();
+            case "🗓 этот месяц", "этот месяц", "текущий месяц" ->
+                    salesAnalyticsService.formatCurrentMonthSummary();
+            case "⬅️ прошлый месяц", "прошлый месяц" ->
+                    salesAnalyticsService.formatPreviousMonthSummary();
+            case "ℹ️ помощь", "помощь" -> help();
+            default -> handleCommandOrMonth(rawText);
+        };
+    }
+
+    private String handleCommandOrMonth(String rawText) {
+        String normalizedText = rawText.toLowerCase(Locale.ROOT);
+
+        if (looksLikeMonthInput(normalizedText)) {
+            try {
+                YearMonth month = parseMonth(normalizedText);
+                return salesAnalyticsService.formatMonthSummary(month);
+            } catch (DateTimeParseException ignored) {
+                return monthHelp();
+            }
+        }
+
+        String[] parts = rawText.trim().split("\\s+");
         String command = parts[0].toLowerCase(Locale.ROOT);
 
         int botMentionIndex = command.indexOf("@");
@@ -75,26 +130,19 @@ public class TelegramCommandHandler {
 
     private String handleMonth(String[] parts) {
         if (parts.length < 2) {
-            return """
-                Укажи месяц.
-
-                Примеры:
-                /month 2026-07
-                /month 07.2026
-                """;
+            return salesAnalyticsService.formatCurrentMonthSummary();
         }
 
+        String monthArgument = String.join(
+                " ",
+                Arrays.copyOfRange(parts, 1, parts.length)
+        );
+
         try {
-            YearMonth month = parseMonth(parts[1]);
+            YearMonth month = parseMonth(monthArgument);
             return salesAnalyticsService.formatMonthSummary(month);
         } catch (DateTimeParseException exception) {
-            return """
-                Не понял месяц.
-
-                Используй один из форматов:
-                /month 2026-07
-                /month 07.2026
-                """;
+            return monthHelp();
         }
     }
 
@@ -107,24 +155,96 @@ public class TelegramCommandHandler {
     }
 
     private YearMonth parseMonth(String value) {
+        String normalizedValue = value.trim().toLowerCase(Locale.ROOT);
+
         try {
-            return YearMonth.parse(value);
+            return YearMonth.parse(normalizedValue);
         } catch (DateTimeParseException ignored) {
-            return YearMonth.parse(value, RU_MONTH_FORMAT);
+            // пробуем следующий формат
         }
+
+        try {
+            return YearMonth.parse(normalizedValue, RU_MONTH_FORMAT);
+        } catch (DateTimeParseException ignored) {
+            // пробуем русское название месяца
+        }
+
+        return parseRussianMonth(normalizedValue);
+    }
+
+    private YearMonth parseRussianMonth(String value) {
+        String[] parts = value.trim().split("\\s+");
+
+        if (parts.length == 0) {
+            throw new DateTimeParseException("Empty month", value, 0);
+        }
+
+        Integer month = RU_MONTHS.get(parts[0]);
+
+        if (month == null) {
+            throw new DateTimeParseException("Unknown month", value, 0);
+        }
+
+        int year = YearMonth.now().getYear();
+
+        if (parts.length >= 2) {
+            try {
+                year = Integer.parseInt(parts[1]);
+            } catch (NumberFormatException exception) {
+                throw new DateTimeParseException("Invalid year", value, 0);
+            }
+        }
+
+        return YearMonth.of(year, month);
+    }
+
+    private boolean looksLikeMonthInput(String value) {
+        String trimmedValue = value.trim();
+
+        if (trimmedValue.matches("\\d{4}-\\d{2}")) {
+            return true;
+        }
+
+        if (trimmedValue.matches("\\d{2}\\.\\d{4}")) {
+            return true;
+        }
+
+        String firstWord = trimmedValue.split("\\s+")[0];
+
+        return RU_MONTHS.containsKey(firstWord);
+    }
+
+    private String monthHelp() {
+        return """
+                Не понял месяц.
+
+                Можно ввести так:
+                07.2026
+                2026-07
+                июль 2026
+                июль
+                """;
     }
 
     private String help() {
         return """
                 Baros Bot
 
-                Доступные команды:
+                Основные кнопки:
+                📊 Сегодня — отчет за текущий барный день
+                📆 Вчера — отчет за прошлый барный день
+                🗓 Этот месяц — отчет за текущий месяц
+                ⬅️ Прошлый месяц — отчет за прошлый месяц
 
-                /today — отчет за текущий барный день
-                /yesterday — отчет за прошлый барный день
-                /day 2026-07-28 — отчет за выбранный день
-                /month 2026-07 — отчет за месяц
-                /help — список команд
+                Можно также просто отправить месяц:
+                07.2026
+                2026-07
+                июль 2026
+
+                Дополнительные команды:
+                /day 28.07.2026
+                /month 07.2026
+                /help
                 """;
     }
 }
