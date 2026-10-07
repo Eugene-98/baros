@@ -3,10 +3,12 @@ package com.baros.telegram;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
+import org.springframework.context.annotation.Profile;
 
 import java.util.List;
 
 @Service
+@Profile("!dvoyka")
 public class TelegramPollingService {
 
     private final TelegramClient telegramClient;

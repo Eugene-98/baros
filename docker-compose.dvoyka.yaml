@@ -1,0 +1,14 @@
+services:
+  dvoyka-bot:
+    build: .
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: dvoyka
+      ESUPL_API_TOKEN: ${ESUPL_API_TOKEN:?Set ESUPL_API_TOKEN}
+      DVOYKA_BOT_TOKEN: ${DVOYKA_BOT_TOKEN:?Set a separate Telegram bot token}
+      DVOYKA_ALLOWED_USER_IDS: ${DVOYKA_ALLOWED_USER_IDS:-}
+      DVOYKA_ALLOWED_CHAT_IDS: ${DVOYKA_ALLOWED_CHAT_IDS:-}
+      DVOYKA_SYNC_CRON: ${DVOYKA_SYNC_CRON:-0 5 8 * * *}
+      TZ: Europe/Minsk
+    volumes:
+      - ./data-dvoyka:/app/data

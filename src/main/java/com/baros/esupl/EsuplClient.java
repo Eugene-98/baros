@@ -11,6 +11,8 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.HashSet;
+import java.util.Set;
 
 @Service
 public class EsuplClient {
@@ -53,7 +55,17 @@ public class EsuplClient {
     }
 
     public List<EsuplSalesResponse.Sale> getSalesForRange(LocalDateTime start, LocalDateTime end) {
+        return getSalesForRange(start, end, false);
+    }
+
+    // Fund reconciliation must never mistake a malformed API response for an empty day.
+    public List<EsuplSalesResponse.Sale> getSalesForRangeStrict(LocalDateTime start, LocalDateTime end) {
+        return getSalesForRange(start, end, true);
+    }
+
+    private List<EsuplSalesResponse.Sale> getSalesForRange(LocalDateTime start, LocalDateTime end, boolean strict) {
         List<EsuplSalesResponse.Sale> result = new ArrayList<>();
+        Set<Long> seenIds = new HashSet<>();
 
         int page = 1;
         int perPage = 50;
@@ -86,10 +98,20 @@ public class EsuplClient {
                     .bodyToMono(EsuplSalesResponse.class)
                     .block(Duration.ofSeconds(30));
 
+            if (strict && (response == null || response.data() == null)) {
+                throw new IllegalStateException("ESUPL returned no sales data field");
+            }
             if (response == null || response.data() == null || response.data().isEmpty()) {
                 break;
             }
 
+            if (strict) {
+                for (EsuplSalesResponse.Sale sale : response.data()) {
+                    if (sale == null || sale.id() == null || !seenIds.add(sale.id())) {
+                        throw new IllegalStateException("ESUPL pagination returned a missing or duplicate sale ID");
+                    }
+                }
+            }
             result.addAll(response.data());
 
             if (response.data().size() < perPage) {

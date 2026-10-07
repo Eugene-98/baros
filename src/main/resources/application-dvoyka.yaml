@@ -1,0 +1,16 @@
+spring:
+  main:
+    web-application-type: none
+    keep-alive: true
+
+telegram:
+  bot-token: ${DVOYKA_BOT_TOKEN:}
+  daily-summary:
+    enabled: false
+
+fund:
+  database: ${DVOYKA_DATABASE:data/dvoyka.sqlite}
+  allowed-user-ids: ${DVOYKA_ALLOWED_USER_IDS:}
+  allowed-chat-ids: ${DVOYKA_ALLOWED_CHAT_IDS:}
+  sync:
+    cron: "${DVOYKA_SYNC_CRON:0 5 8 * * *}"
