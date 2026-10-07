@@ -7,8 +7,10 @@ target/
 .env.*
 !.env.example
 !.env.dvoyka.example
+!.env.dvoyka-test.example
 data/
 data-dvoyka/
+data-dvoyka-test/
 data-dvoyka-backup-*/
 *.sqlite
 *.sqlite-shm

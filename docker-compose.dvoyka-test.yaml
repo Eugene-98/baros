@@ -1,0 +1,18 @@
+name: baros-dvoyka-test
+
+services:
+  dvoyka-test:
+    build: .
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: dvoyka
+      # A real ESUPL token is only needed when manually testing /sync.
+      ESUPL_API_TOKEN: ${ESUPL_API_TOKEN:-test-not-configured}
+      DVOYKA_BOT_TOKEN: ${DVOYKA_BOT_TOKEN:?Set the test Telegram bot token}
+      DVOYKA_ALLOWED_USER_IDS: ${DVOYKA_ALLOWED_USER_IDS:-}
+      DVOYKA_ALLOWED_CHAT_IDS: ${DVOYKA_ALLOWED_CHAT_IDS:-}
+      DVOYKA_DATABASE: /app/data/dvoyka-test.sqlite
+      DVOYKA_SYNC_CRON: "-"
+      TZ: Europe/Minsk
+    volumes:
+      - ./data-dvoyka-test:/app/data

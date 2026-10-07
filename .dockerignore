@@ -5,6 +5,7 @@ data
 .env
 .env.*
 data-dvoyka
+data-dvoyka-test
 data-dvoyka-backup-*
 *.sqlite
 *.sqlite-wal
