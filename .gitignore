@@ -4,7 +4,15 @@ target/
 *.iml
 
 .env
+.env.*
+!.env.example
+!.env.dvoyka.example
 data/
+data-dvoyka/
+data-dvoyka-backup-*/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
 *.log
 
 .DS_Store
