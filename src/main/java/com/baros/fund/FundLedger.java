@@ -26,6 +26,7 @@ public class FundLedger {
     public record Snapshot(Long balance, LocalDate startDate, String lastSync, String throughDate) {}
     public record SaleAmount(long cents, LocalDate businessDate) {}
     public record SyncResult(long delta, int changes, long balance) {}
+    public record Draft(boolean expense, String note) {}
     public static class InputException extends IllegalArgumentException {
         public InputException(String message) { super(message); }
     }
@@ -46,6 +47,12 @@ public class FundLedger {
                       actor_name TEXT NOT NULL, created_at TEXT NOT NULL, source_key TEXT UNIQUE NOT NULL)
                     """);
             s.execute("CREATE UNIQUE INDEX IF NOT EXISTS one_opening ON fund_entries(kind) WHERE kind='OPENING'");
+            s.execute("""
+                    CREATE TABLE IF NOT EXISTS fund_drafts (
+                      chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
+                      expense INTEGER NOT NULL, note TEXT,
+                      PRIMARY KEY(chat_id, user_id))
+                    """);
             s.execute("""
                     CREATE TABLE IF NOT EXISTS fund_sales (
                       sale_id INTEGER PRIMARY KEY, cents INTEGER NOT NULL, business_date TEXT NOT NULL)
@@ -103,6 +110,11 @@ public class FundLedger {
     }
 
     public long manual(long updateId, long cents, String note, Actor actor) {
+        return manual(updateId, cents, note, actor, null);
+    }
+
+    /** Save the operation and finish the user's input in the same transaction. */
+    public long manual(long updateId, long cents, String note, Actor actor, Long chatId) {
         if (cents == 0) throw new InputException("Сумма должна быть больше нуля.");
         if (note == null || note.isBlank()) throw new InputException("Добавь пояснение к операции.");
         if (note.length() > 140) throw new InputException("Пояснение должно быть не длиннее 140 символов.");
@@ -110,8 +122,54 @@ public class FundLedger {
             requireOpening(c);
             if (!hasSource(c, "tg:" + updateId)) {
                 addEntry(c, cents, cents > 0 ? "INCOME" : "EXPENSE", note, actor, "tg:" + updateId);
+                if (chatId != null) deleteDraft(c, chatId, actor.id());
             }
             return balance(c);
+        });
+    }
+
+    public Draft draft(long chatId, long userId) {
+        return transaction(c -> {
+            try (PreparedStatement p = c.prepareStatement("SELECT expense,note FROM fund_drafts WHERE chat_id=? AND user_id=?")) {
+                p.setLong(1, chatId);
+                p.setLong(2, userId);
+                try (ResultSet r = p.executeQuery()) {
+                    return r.next() ? new Draft(r.getBoolean(1), r.getString(2)) : null;
+                }
+            }
+        });
+    }
+
+    public void saveDraft(long chatId, long userId, Draft draft) {
+        transaction(c -> {
+            requireOpening(c);
+            execute(c, """
+                    INSERT INTO fund_drafts VALUES (?,?,?,?) ON CONFLICT(chat_id,user_id)
+                    DO UPDATE SET expense=excluded.expense,note=excluded.note
+                    """, chatId, userId, draft.expense(), draft.note());
+            return null;
+        });
+    }
+
+    public void cancelDraft(long chatId, long userId) {
+        transaction(c -> { deleteDraft(c, chatId, userId); return null; });
+    }
+
+    private void deleteDraft(Connection c, long chatId, long userId) throws SQLException {
+        execute(c, "DELETE FROM fund_drafts WHERE chat_id=? AND user_id=?", chatId, userId);
+    }
+
+    /** Recover a successful write when Telegram failed before receiving our reply. */
+    public Entry manualEntry(long updateId) {
+        return transaction(c -> {
+            try (PreparedStatement p = c.prepareStatement("SELECT * FROM fund_entries WHERE source_key=? AND kind IN ('INCOME','EXPENSE')")) {
+                p.setString(1, "tg:" + updateId);
+                try (ResultSet r = p.executeQuery()) {
+                    return r.next() ? new Entry(r.getLong("id"), r.getLong("cents"), r.getString("kind"),
+                            r.getString("note"), new Actor(r.getLong("actor_id"), r.getString("actor_name")),
+                            Instant.parse(r.getString("created_at"))) : null;
+                }
+            }
         });
     }
 

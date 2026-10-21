@@ -20,6 +20,9 @@ public class FundCommandHandler {
     private static final Logger log = LoggerFactory.getLogger(FundCommandHandler.class);
     private static final DateTimeFormatter DATE = DateTimeFormatter.ofPattern("dd.MM.uuuu").withResolverStyle(ResolverStyle.STRICT);
     private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm");
+    private static final List<String> EXPENSE_TEMPLATES = List.of("Хозяюшка", "Рынок", "Бар Закупка");
+    private static final String CANCEL = "❌ Отмена";
+    private static final String CUSTOM = "✍️ Своё назначение";
     private final FundLedger ledger;
     private final FundSyncService sync;
     private final Set<Long> allowedUsers;
@@ -40,7 +43,7 @@ public class FundCommandHandler {
     public String handle(TelegramUpdateResponse.Update update) {
         var message = update.message();
         var user = message.from();
-        String text = message.text() == null ? "" : message.text().trim();
+        String text = message.text() == null ? "" : message.text().replaceAll("[\\p{Zs}\\s]+", " ").trim();
         String command = text.split("\\s+", 2)[0].split("@", 2)[0].toLowerCase(Locale.ROOT);
         if (command.equals("/id")) {
             return "ID чата: " + message.chat().id() + "\nТвой Telegram ID: " + (user == null ? "не определён" : user.id());
@@ -59,9 +62,23 @@ public class FundCommandHandler {
                 + (user.lastName() == null ? "" : " " + user.lastName())
                 + (user.username() == null ? "" : " @" + user.username());
         FundLedger.Actor actor = new FundLedger.Actor(user.id(), name);
+        long chatId = message.chat().id();
         try {
+            // A completed guided input has already cleared its draft. Replay its saved receipt
+            // before interpreting the text, including after a process restart.
+            var saved = ledger.manualEntry(update.updateId());
+            if (saved != null) return receipt(saved.cents(), saved.note(), ledger.snapshot().balance());
+            if (text.equals(CANCEL) || command.equals("/cancel")) {
+                ledger.cancelDraft(chatId, user.id());
+                return "Ввод отменён. Новая операция не записана.";
+            }
+            if (Set.of("💰 Остаток", "📒 История", "🔄 Синхронизировать", "ℹ️ Помощь").contains(text)
+                    || Set.of("/balance", "/history", "/sync", "/help", "/start").contains(command)) {
+                ledger.cancelDraft(chatId, user.id());
+            }
             if (text.equals("💰 Остаток") || command.equals("/balance")) return balance();
             if (text.equals("📒 История") || command.equals("/history")) return history();
+            if (text.equals("ℹ️ Помощь") || command.equals("/help") || command.equals("/start")) return help();
             if (text.equals("🔄 Синхронизировать") || command.equals("/sync")) {
                 try {
                     var result = sync.sync(actor);
@@ -76,8 +93,13 @@ public class FundCommandHandler {
                             + "Не добавляй сумму ESUPL вручную: при следующей сверке она будет учтена автоматически.";
                 }
             }
-            if (text.equals("➕ Поступление")) return "Отправь сумму и пояснение:\n/add 50 Возврат подотчёта\n\nИли коротко: + 50 Возврат подотчёта";
-            if (text.equals("➖ Расход")) return "Отправь сумму и пояснение:\n/spend 25,50 Закупка лимонов\n\nИли коротко: - 25,50 Закупка лимонов";
+            if (text.equals("➕ Поступление") || (command.equals("/add") && !text.contains(" "))) {
+                ledger.saveDraft(chatId, user.id(), new FundLedger.Draft(false, null));
+                return "Отправь сумму и назначение одним сообщением:\n50 Возврат подотчёта\n\nСумма: 20, 20.00 или 20,00. Для выхода — «Отмена».";
+            }
+            if (text.equals("➖ Расход") || (command.equals("/spend") && !text.contains(" "))) {
+                return startExpense(chatId, user.id());
+            }
             String[] parts = text.split("\\s+", 3);
             if (command.equals("/opening")) {
                 if (parts.length != 3) return openingHelp();
@@ -88,13 +110,21 @@ public class FundCommandHandler {
                 return "Начальный остаток сохранён.\nОстаток: " + FundLedger.money(balance)
                         + "\nПоступления ESUPL учитываются с " + DATE.format(date) + " в 03:00.\nНажми «Синхронизировать» для загрузки завершённых дней.";
             }
-            if (Set.of("/add", "/spend", "+", "-").contains(command)) {
-                if (parts.length != 3) throw new FundLedger.InputException("Нужны сумма и пояснение. Например: /spend 25,50 Закупка лимонов");
-                long cents = FundLedger.parseMoney(parts[1], false);
-                boolean expense = command.equals("/spend") || command.equals("-");
-                long balance = ledger.manual(update.updateId(), expense ? -cents : cents, parts[2], actor);
-                return (expense ? "Расход" : "Поступление") + " записан: " + FundLedger.money(cents)
-                        + "\n" + FundLedger.clean(parts[2], 140) + "\nОстаток: " + FundLedger.money(balance);
+            if (command.equals("/add") || command.equals("/spend")) {
+                return record(update.updateId(), chatId, actor, command.equals("/spend"),
+                        text.substring(text.indexOf(' ') + 1), null);
+            }
+            if (text.startsWith("-") || text.startsWith("+") || text.startsWith("−")) {
+                return record(update.updateId(), chatId, actor, !text.startsWith("+"), text.substring(1).trim(), null);
+            }
+            var draft = ledger.draft(chatId, user.id());
+            if (draft != null && !text.startsWith("/")) {
+                if (draft.expense() && text.equals(CUSTOM)) return startExpense(chatId, user.id());
+                if (draft.expense() && EXPENSE_TEMPLATES.contains(text)) {
+                    ledger.saveDraft(chatId, user.id(), new FundLedger.Draft(true, text));
+                    return "Расход: «" + text + "».\nОтправь только сумму: 20, 20.00 или 20,00.\nДля выхода — «Отмена».";
+                }
+                return record(update.updateId(), chatId, actor, draft.expense(), text, draft.note());
             }
             return help();
         } catch (FundLedger.InputException e) {
@@ -102,6 +132,32 @@ public class FundCommandHandler {
         } catch (DateTimeException e) {
             return "Не понял дату. Используй ДД.ММ.ГГГГ или ГГГГ-ММ-ДД и существующую дату.";
         }
+    }
+
+    private String startExpense(long chatId, long userId) {
+        ledger.saveDraft(chatId, userId, new FundLedger.Draft(true, null));
+        return "Отправь сумму и назначение одним сообщением:\n20,50 Закупка лимонов\n\n"
+                + "Или выбери шаблон ниже и отправь только сумму.\nСумма: 20, 20.00 или 20,00. Для выхода — «Отмена».";
+    }
+
+    private String record(long updateId, long chatId, FundLedger.Actor actor, boolean expense, String input, String template) {
+        String[] values = input.split("\\s+", 2);
+        if (template == null && values.length != 2) {
+            throw new FundLedger.InputException("Нужны сумма и пояснение. Например: 20,50 Закупка лимонов (после кнопки) или -20,50 Закупка лимонов.");
+        }
+        if (template != null && values.length != 1) {
+            throw new FundLedger.InputException("Для выбранного шаблона отправь только сумму: 20, 20.00 или 20,00. Для другого назначения нажми «Своё назначение».");
+        }
+        long cents = FundLedger.parseMoney(values[0], false);
+        String note = template == null ? values[1] : template;
+        long signed = expense ? -cents : cents;
+        long balance = ledger.manual(updateId, signed, note, actor, chatId);
+        return receipt(signed, note, balance);
+    }
+
+    private String receipt(long cents, String note, long balance) {
+        return (cents < 0 ? "Расход записан: " : "Поступление записано: ") + FundLedger.money(Math.abs(cents))
+                + "\n" + FundLedger.clean(note, 140) + "\nОстаток: " + FundLedger.money(balance);
     }
 
     private String balance() {
@@ -129,7 +185,12 @@ public class FundCommandHandler {
     }
 
     private String help() {
-        return "Двойка · общий фонд\n\n/balance — остаток\n/add 50 Пояснение — поступление\n/spend 25,50 Пояснение — расход\n/history — последние 10 операций\n/sync — сверка завершённых смен с ESUPL\n/id — ID для настройки доступа\n\n" + openingHelp();
+        return "Двойка · общий фонд\n\nРасход: -20 Назначение (можно - 20).\n"
+                + "Или нажми «Расход» → отправь сумму и назначение.\n"
+                + "Или «Расход» → выбери шаблон → отправь только сумму.\n"
+                + "Сумма: 20, 20.00, 20,00; также 20.5 или 20,5.\n"
+                + "Поступление: +50 Назначение или кнопка «Поступление».\n"
+                + "/cancel — отменить ввод\n/balance — остаток\n/add 50 Пояснение — поступление\n/spend 25,50 Пояснение — расход\n/history — последние 10 операций\n/sync — сверка завершённых смен с ESUPL\n/id — ID для настройки доступа\n\n" + openingHelp();
     }
 
     private String openingHelp() {
@@ -154,5 +215,20 @@ public class FundCommandHandler {
                 List.of(new KeyboardButton("➕ Поступление"), new KeyboardButton("➖ Расход")),
                 List.of(new KeyboardButton("🔄 Синхронизировать"), new KeyboardButton("ℹ️ Помощь"))),
                 true, false, "Выбери действие");
+    }
+
+    public ReplyKeyboardMarkup keyboardFor(TelegramUpdateResponse.Update update) {
+        var message = update.message();
+        var user = message.from();
+        if (user == null || user.id() == null || user.bot()) return keyboard();
+        var draft = ledger.draft(message.chat().id(), user.id());
+        if (draft == null) return keyboard();
+        var rows = new ArrayList<List<KeyboardButton>>();
+        if (draft.expense()) {
+            for (String template : EXPENSE_TEMPLATES) rows.add(List.of(new KeyboardButton(template)));
+            if (draft.note() != null) rows.add(List.of(new KeyboardButton(CUSTOM)));
+        }
+        rows.add(List.of(new KeyboardButton(CANCEL)));
+        return new ReplyKeyboardMarkup(rows, true, false, draft.note() == null ? "Сумма и назначение" : "Только сумма");
     }
 }

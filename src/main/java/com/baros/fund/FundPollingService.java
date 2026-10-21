@@ -52,7 +52,7 @@ public class FundPollingService {
             if (update.message() != null && update.message().chat() != null
                     && update.message().chat().id() != null && update.message().text() != null) {
                 String answer = commands.handle(update);
-                telegram.sendMessage(update.message().chat().id(), answer, FundCommandHandler.keyboard());
+                telegram.sendMessage(update.message().chat().id(), answer, commands.keyboardFor(update));
             }
             // Commit the offset only after the operation AND reply succeed.
             // Replayed writes are deduplicated by their original Telegram update ID.
