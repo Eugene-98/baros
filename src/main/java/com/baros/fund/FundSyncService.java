@@ -2,6 +2,11 @@ package com.baros.fund;
 
 import com.baros.esupl.EsuplClient;
 import com.baros.esupl.EsuplSalesResponse;
+import com.baros.esupl.EsuplSyncException;
+import org.springframework.core.codec.DecodingException;
+import org.springframework.core.io.buffer.DataBufferLimitException;
+import org.springframework.web.reactive.function.client.WebClientRequestException;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -12,7 +17,9 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.time.*;
+import java.sql.SQLException;
 import java.util.*;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 
 @Service
@@ -62,28 +69,42 @@ public class FundSyncService {
             LocalDateTime end = day.plusDays(1).atTime(dayStartHour, 0).minusSeconds(1);
             for (EsuplSalesResponse.Sale sale : esupl.getSalesForRangeStrict(start, end)) {
                 if (sale == null || sale.id() == null || sale.id() <= 0 || sale.eventDate() == null) {
-                    throw new IllegalStateException("ESUPL check has no identity/date; sync aborted");
+                    throw new EsuplSyncException("ESUPL_CHECK_FIELDS", "У чека отсутствует корректный ID или event_date. Барный день: "
+                            + day + "; ID: " + (sale == null ? "не указан" : sale.id()) + ".");
                 }
                 LocalDateTime event = sale.eventDate().atZoneSameInstant(clock.getZone()).toLocalDateTime();
                 if (event.isBefore(start) || !event.isBefore(start.plusDays(1))) {
-                    throw new IllegalStateException("ESUPL returned a check outside the requested bar day");
+                    throw new EsuplSyncException("ESUPL_DATE_RANGE", "Чек ID " + sale.id()
+                            + " находится вне запрошенного периода.\nВремя event_date: " + sale.eventDate()
+                            + "; в " + clock.getZone() + ": " + event
+                            + ".\nЗапрошено: " + start + " — " + end + " (" + clock.getZone() + ").");
                 }
-                if (!seen.add(sale.id())) throw new IllegalStateException("ESUPL returned a duplicate check; retry sync");
+                if (!seen.add(sale.id())) throw new EsuplSyncException("ESUPL_DUPLICATE",
+                        "Чек ID " + sale.id() + " повторился при сверке барного дня " + day + ".");
                 if (sale.deleted() || !sale.paid()) continue;
                 // The include is mandatory: absent data must not erase previous imports.
                 if (sale.totalDiscounts() == null) {
                     if (sale.totalDiscount() != null && sale.totalDiscount().signum() == 0) continue;
-                    throw new IllegalStateException("ESUPL omitted total_discounts");
+                    throw new EsuplSyncException("ESUPL_DISCOUNTS_MISSING", "У чека ID " + sale.id()
+                            + " отсутствует список total_discounts. Барный день: " + day + ".");
                 }
                 BigDecimal total = BigDecimal.ZERO;
                 for (EsuplSalesResponse.TotalDiscount discount : sale.totalDiscounts()) {
                     if (discount == null || discount.name() == null || discount.amount() == null) {
-                        throw new IllegalStateException("ESUPL returned an incomplete discount");
+                        throw new EsuplSyncException("ESUPL_DISCOUNT_FIELDS", "У скидки в чеке ID " + sale.id()
+                                + " отсутствует название или сумма. Барный день: " + day + ".");
                     }
                     if (discountNames.contains(normalize(discount.name()))) total = total.add(discount.amount());
                 }
-                long cents = total.movePointRight(2).longValueExact();
-                if (cents < 0) throw new IllegalStateException("ESUPL returned a negative discount");
+                long cents;
+                try {
+                    cents = total.movePointRight(2).longValueExact();
+                } catch (ArithmeticException e) {
+                    throw new EsuplSyncException("ESUPL_DISCOUNT_AMOUNT", "Сумму скидки в чеке ID " + sale.id()
+                            + " нельзя точно сохранить в копейках. Барный день: " + day + ".");
+                }
+                if (cents < 0) throw new EsuplSyncException("ESUPL_DISCOUNT_AMOUNT", "Отрицательная скидка в чеке ID "
+                        + sale.id() + ". Барный день: " + day + ".");
                 if (cents != 0) amounts.put(sale.id(), new FundLedger.SaleAmount(cents, day));
             }
         }
@@ -97,9 +118,40 @@ public class FundSyncService {
             FundLedger.SyncResult result = sync(FundLedger.Actor.system());
             log.info("Fund sync completed: {} changes", result.changes());
         } catch (Exception e) {
-            // Do not log HTTP exception messages: they can contain authorization URLs or sales data.
-            log.error("Fund sync failed ({}); ledger remains unchanged", e.getClass().getSimpleName());
+            log.error("Fund sync failed: {}", failureDescription(e));
         }
+    }
+
+    /** Only our explicit diagnostics are safe to expose; arbitrary exception messages may contain secrets. */
+    static String failureDescription(Throwable error) {
+        List<Throwable> causes = new ArrayList<>();
+        for (Throwable cause = error; cause != null && causes.size() < 20 && !causes.contains(cause); cause = cause.getCause()) {
+            causes.add(cause);
+            if (cause instanceof EsuplSyncException known) return known.diagnostic();
+        }
+        if (causes.stream().anyMatch(e -> e instanceof TimeoutException || e instanceof java.net.SocketTimeoutException)) {
+            return "Код: ESUPL_TIMEOUT\nESUPL не ответил за отведённое время. Попробуй синхронизацию позже.";
+        }
+        for (Throwable cause : causes) {
+            if (cause instanceof WebClientResponseException http) {
+                return "Код: ESUPL_HTTP_" + http.getStatusCode().value() + "\nESUPL ответил HTTP " + http.getStatusCode().value() + ".";
+            }
+            if (cause instanceof DataBufferLimitException) {
+                return "Код: ESUPL_RESPONSE_SIZE\nОтвет ESUPL превысил допустимый размер.";
+            }
+            if (cause instanceof DecodingException) {
+                return "Код: ESUPL_RESPONSE_FORMAT\nНе удалось прочитать формат данных ESUPL.";
+            }
+            if (cause instanceof WebClientRequestException) {
+                return "Код: ESUPL_CONNECTION\nНе удалось подключиться к ESUPL. Попробуй синхронизацию позже.";
+            }
+            if (cause instanceof SQLException) {
+                return "Код: FUND_DATABASE\nНе удалось прочитать или сохранить журнал фонда.";
+            }
+        }
+        String location = Arrays.stream(error.getStackTrace()).filter(frame -> frame.getClassName().startsWith("com.baros."))
+                .findFirst().map(frame -> " · " + frame.getClassName() + ":" + frame.getLineNumber()).orElse("");
+        return "Код: SYNC_INTERNAL\nВнутренняя ошибка: " + error.getClass().getSimpleName() + location + ".";
     }
 
     private static String normalize(String name) {

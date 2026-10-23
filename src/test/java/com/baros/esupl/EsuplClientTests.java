@@ -4,11 +4,14 @@ import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.*;
 
@@ -16,6 +19,7 @@ class EsuplClientTests {
     private HttpServer server;
     private EsuplClient client;
     private final AtomicReference<String> response = new AtomicReference<>();
+    private final AtomicInteger status = new AtomicInteger(200);
     private static final LocalDateTime START = LocalDateTime.of(2026, 10, 6, 3, 0);
 
     @BeforeEach void startServer() throws Exception {
@@ -23,7 +27,7 @@ class EsuplClientTests {
         server.createContext("/teams/1/sales", exchange -> {
             byte[] bytes = response.get().getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "application/json");
-            exchange.sendResponseHeaders(200, bytes.length);
+            exchange.sendResponseHeaders(status.get(), bytes.length);
             try (var out = exchange.getResponseBody()) { out.write(bytes); }
         });
         server.start();
@@ -50,5 +54,18 @@ class EsuplClientTests {
         assertThat(result.getFirst().eventDate().toInstant()).isEqualTo(java.time.Instant.parse("2026-10-06T17:00:00Z"));
         response.set("{\"data\":[" + sale + "," + sale + "]}");
         assertThatThrownBy(() -> client.getSalesForRangeStrict(START, START.plusDays(1))).isInstanceOf(IllegalStateException.class);
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {401, 403, 429, 500})
+    void httpFailuresHaveSafeStatusAndPeriodEvenWhenBodyIsEmpty(int code) {
+        status.set(code);
+        for (String body : new String[]{"{\"detail\":\"secret-token customer-data\"}", ""}) {
+            response.set(body);
+            assertThatThrownBy(() -> client.getSalesForRangeStrict(START, START.plusDays(1)))
+                    .isInstanceOfSatisfying(EsuplSyncException.class, error ->
+                            assertThat(error.diagnostic()).contains("ESUPL_HTTP_" + code, "2026-10-06T03:00", "страница 1")
+                                    .doesNotContain("secret-token", "customer-data", "/teams/", "http://"));
+        }
     }
 }

@@ -2,6 +2,7 @@ package com.baros.fund;
 
 import com.baros.esupl.EsuplClient;
 import com.baros.esupl.EsuplSalesResponse;
+import com.baros.esupl.EsuplSyncException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -85,5 +86,50 @@ class FundSyncServiceTests {
                 Clock.fixed(Instant.parse("2026-10-07T00:00:00Z"), ZoneId.of("Europe/Minsk")), 3, "Порча");
         assertThat(before.currentBusinessDate()).isEqualTo(LocalDate.of(2026, 10, 6));
         assertThat(after.currentBusinessDate()).isEqualTo(LocalDate.of(2026, 10, 7));
+    }
+
+    @Test void outOfRangeFailureShowsExactEventAndQueryWithoutWriting() {
+        var check = sale(42, START, true, false, "30");
+        check = new EsuplSalesResponse.Sale(check.id(), check.orderNumber(), check.type(), check.status(), false, true,
+                check.totalSum(), check.totalDiscount(), OffsetDateTime.parse("2026-10-06T00:30:00Z"),
+                null, null, check.payments(), check.items(), check.totalDiscounts());
+        when(api.getSalesForRangeStrict(any(), any())).thenReturn(List.of(check));
+        assertThatThrownBy(() -> sync.sync(AUTHOR)).isInstanceOfSatisfying(EsuplSyncException.class, e ->
+                assertThat(e.diagnostic()).contains("ESUPL_DATE_RANGE", "ID 42", "2026-10-06T00:30Z",
+                        "Europe/Minsk: 2026-10-06T03:30", "2026-10-05T03:00", "2026-10-06T02:59:59"));
+        assertThat(ledger.snapshot().balance()).isEqualTo(100_000);
+        assertThat(ledger.snapshot().lastSync()).isNull();
+    }
+
+    @Test void missingDiscountsReportCheckAndPreservePreviousImport() {
+        var check = sale(42, START, true, false, "30");
+        when(api.getSalesForRangeStrict(any(), any())).thenReturn(List.of(check), List.of());
+        sync.sync(AUTHOR);
+        var before = ledger.snapshot();
+        var incomplete = new EsuplSalesResponse.Sale(check.id(), check.orderNumber(), check.type(), check.status(), false, true,
+                check.totalSum(), check.totalDiscount(), check.eventDate(), null, null, check.payments(), check.items(), null);
+        when(api.getSalesForRangeStrict(any(), any())).thenReturn(List.of(incomplete));
+        assertThatThrownBy(() -> sync.sync(AUTHOR)).isInstanceOfSatisfying(EsuplSyncException.class, e ->
+                assertThat(e.diagnostic()).contains("ESUPL_DISCOUNTS_MISSING", "ID 42", "2026-10-05"));
+        assertThat(ledger.snapshot()).isEqualTo(before);
+        assertThat(ledger.history()).hasSize(2);
+    }
+
+    @Test void fractionalKopecksReportAmountErrorWithoutRoundingOrWriting() {
+        when(api.getSalesForRangeStrict(any(), any())).thenReturn(List.of(sale(42, START, true, false, "30.001")));
+        assertThatThrownBy(() -> sync.sync(AUTHOR)).isInstanceOfSatisfying(EsuplSyncException.class, e ->
+                assertThat(e.diagnostic()).contains("ESUPL_DISCOUNT_AMOUNT", "ID 42"));
+        assertThat(ledger.snapshot().balance()).isEqualTo(100_000);
+    }
+
+    @Test void wrappedTimeoutAndUnknownErrorsNeverExposeRawMessages() {
+        var timeout = new IllegalStateException("Bearer secret-token https://example.test/private",
+                new java.util.concurrent.TimeoutException("customer-data"));
+        assertThat(FundSyncService.failureDescription(timeout)).contains("ESUPL_TIMEOUT")
+                .doesNotContain("secret-token", "customer-data", "https://");
+        assertThat(FundSyncService.failureDescription(new IllegalStateException("Bearer secret-token")))
+                .contains("SYNC_INTERNAL", "IllegalStateException").doesNotContain("secret-token");
+        assertThat(FundSyncService.failureDescription(new RuntimeException("secret-token", new java.sql.SQLException("customer-data"))))
+                .contains("FUND_DATABASE").doesNotContain("secret-token", "customer-data");
     }
 }

@@ -88,8 +88,10 @@ public class FundCommandHandler {
                 } catch (FundLedger.InputException e) {
                     throw e;
                 } catch (RuntimeException e) {
-                    log.error("Manual fund sync failed ({})", e.getClass().getSimpleName());
-                    return "Синхронизация не завершена. Проверь время последней успешной сверки кнопкой «Остаток» и попробуй позже. "
+                    String diagnostic = FundSyncService.failureDescription(e);
+                    log.error("Manual fund sync failed: {}", diagnostic);
+                    return "Синхронизация не завершена.\n" + diagnostic
+                            + "\n\nПроверь время последней успешной сверки кнопкой «Остаток». При повторении ошибки пришли это сообщение разработчику. "
                             + "Не добавляй сумму ESUPL вручную: при следующей сверке она будет учтена автоматически.";
                 }
             }

@@ -65,6 +65,16 @@ class FundCommandHandlerTests {
         assertThat(handle(3, "/add 10 Возврат")).contains("1010,00 BYN");
     }
 
+    @Test void syncFailureReplyIncludesSafeCauseAndCheckContext() {
+        handle(1, "/opening 1000 07.10.2026");
+        when(sync.sync(any())).thenThrow(new com.baros.esupl.EsuplSyncException("ESUPL_DATE_RANGE",
+                "Чек ID 42 находится вне запрошенного периода."));
+        assertThat(handle(2, "/sync")).contains("не завершена", "ESUPL_DATE_RANGE", "Чек ID 42");
+        doThrow(new IllegalStateException("Bearer secret-token")).when(sync).sync(any());
+        assertThat(handle(3, "/sync")).contains("SYNC_INTERNAL").doesNotContain("secret-token");
+        assertThat(ledger.snapshot().balance()).isEqualTo(100_000);
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"20", "20.00", "20,00", "20.0", "20,0"})
     void allThreeExpensePathsAcceptTheSameMoneyFormats(String amount) {

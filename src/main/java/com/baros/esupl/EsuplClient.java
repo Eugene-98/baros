@@ -87,7 +87,12 @@ public class EsuplClient {
                     .retrieve()
                     .onStatus(
                             status -> status.isError(),
-                            clientResponse -> clientResponse.bodyToMono(String.class)
+                            clientResponse -> strict
+                                    ? clientResponse.releaseBody().thenReturn(new EsuplSyncException(
+                                            "ESUPL_HTTP_" + clientResponse.statusCode().value(),
+                                            "ESUPL ответил HTTP " + clientResponse.statusCode().value()
+                                                    + ". Период: " + start + " — " + end + "; страница " + currentPage + "."))
+                                    : clientResponse.bodyToMono(String.class)
                                     .map(body -> new RuntimeException(
                                             "ESUPL API error: HTTP "
                                                     + clientResponse.statusCode()
@@ -99,7 +104,8 @@ public class EsuplClient {
                     .block(Duration.ofSeconds(30));
 
             if (strict && (response == null || response.data() == null)) {
-                throw new IllegalStateException("ESUPL returned no sales data field");
+                throw new EsuplSyncException("ESUPL_NO_DATA", "В ответе ESUPL нет списка чеков. Период: "
+                        + start + " — " + end + "; страница " + currentPage + ".");
             }
             if (response == null || response.data() == null || response.data().isEmpty()) {
                 break;
@@ -107,8 +113,13 @@ public class EsuplClient {
 
             if (strict) {
                 for (EsuplSalesResponse.Sale sale : response.data()) {
-                    if (sale == null || sale.id() == null || !seenIds.add(sale.id())) {
-                        throw new IllegalStateException("ESUPL pagination returned a missing or duplicate sale ID");
+                    if (sale == null || sale.id() == null) {
+                        throw new EsuplSyncException("ESUPL_CHECK_ID", "ESUPL вернул чек без ID. Период: "
+                                + start + " — " + end + "; страница " + currentPage + ".");
+                    }
+                    if (!seenIds.add(sale.id())) {
+                        throw new EsuplSyncException("ESUPL_DUPLICATE", "ESUPL повторно вернул чек ID " + sale.id()
+                                + ". Период: " + start + " — " + end + "; страница " + currentPage + ".");
                     }
                 }
             }
