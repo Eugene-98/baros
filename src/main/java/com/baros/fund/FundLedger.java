@@ -10,6 +10,8 @@ import java.nio.file.Path;
 import java.sql.*;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 /** One durable ledger. Money is stored as integer kopecks; every write is transactional. */
@@ -27,6 +29,10 @@ public class FundLedger {
     public record SaleAmount(long cents, LocalDate businessDate) {}
     public record SyncResult(long delta, int changes, long balance) {}
     public record Draft(boolean expense, String note) {}
+    public record HistoryView(String period, Instant from, Instant until, long maxId, int page, long updateId) {}
+    public record HistoryPage(HistoryView view, List<Entry> entries, long total, int pages) {}
+    public static final int HISTORY_PAGE_SIZE = 7;
+    private static final DateTimeFormatter UTC_SECOND = DateTimeFormatter.ofPattern("uuuu-MM-dd'T'HH:mm:ss").withZone(ZoneOffset.UTC);
     public static class InputException extends IllegalArgumentException {
         public InputException(String message) { super(message); }
     }
@@ -47,6 +53,13 @@ public class FundLedger {
                       actor_name TEXT NOT NULL, created_at TEXT NOT NULL, source_key TEXT UNIQUE NOT NULL)
                     """);
             s.execute("CREATE UNIQUE INDEX IF NOT EXISTS one_opening ON fund_entries(kind) WHERE kind='OPENING'");
+            s.execute("CREATE INDEX IF NOT EXISTS entry_time ON fund_entries(substr(created_at,1,19),id)");
+            s.execute("""
+                    CREATE TABLE IF NOT EXISTS fund_history_views (
+                      chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, period TEXT NOT NULL,
+                      from_at TEXT, until_at TEXT, max_id INTEGER NOT NULL, page INTEGER NOT NULL,
+                      update_id INTEGER NOT NULL, PRIMARY KEY(chat_id,user_id))
+                    """);
             s.execute("""
                     CREATE TABLE IF NOT EXISTS fund_drafts (
                       chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
@@ -230,6 +243,106 @@ public class FundLedger {
                         Instant.parse(r.getString("created_at"))));
             }
             return entries;
+        });
+    }
+
+    public HistoryView historyView(long chatId, long userId) {
+        return transaction(c -> historyView(c, chatId, userId));
+    }
+
+    private HistoryView historyView(Connection c, long chatId, long userId) throws SQLException {
+        try (PreparedStatement p = c.prepareStatement("SELECT * FROM fund_history_views WHERE chat_id=? AND user_id=?")) {
+            p.setLong(1, chatId);
+            p.setLong(2, userId);
+            try (ResultSet r = p.executeQuery()) {
+                return r.next() ? new HistoryView(r.getString("period"),
+                        r.getString("from_at") == null ? null : Instant.parse(r.getString("from_at")),
+                        r.getString("until_at") == null ? null : Instant.parse(r.getString("until_at")),
+                        r.getLong("max_id"), r.getInt("page"), r.getLong("update_id")) : null;
+            }
+        }
+    }
+
+    public HistoryView openHistory(long chatId, long userId, long updateId, String period, Instant from, Instant until) {
+        if (!period.equals("menu") && (from == null || until == null || !from.isBefore(until)
+                || from.getNano() != 0 || until.getNano() != 0)) throw new IllegalArgumentException("Invalid history interval");
+        return transaction(c -> {
+            var old = historyView(c, chatId, userId);
+            if (old != null && old.updateId() == updateId) return old;
+            long maxId;
+            try (Statement s = c.createStatement(); ResultSet r = s.executeQuery("SELECT COALESCE(MAX(id),0) FROM fund_entries")) {
+                maxId = r.next() ? r.getLong(1) : 0;
+            }
+            var view = new HistoryView(period, from, until, maxId, 0, updateId);
+            saveHistoryView(c, chatId, userId, view);
+            deleteDraft(c, chatId, userId);
+            return view;
+        });
+    }
+
+    private void saveHistoryView(Connection c, long chatId, long userId, HistoryView view) throws SQLException {
+        execute(c, """
+                INSERT INTO fund_history_views VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(chat_id,user_id)
+                DO UPDATE SET period=excluded.period,from_at=excluded.from_at,until_at=excluded.until_at,
+                  max_id=excluded.max_id,page=excluded.page,update_id=excluded.update_id
+                """, chatId, userId, view.period(), view.from() == null ? null : view.from().toString(),
+                view.until() == null ? null : view.until().toString(), view.maxId(), view.page(), view.updateId());
+    }
+
+    public void closeHistory(long chatId, long userId) {
+        transaction(c -> { execute(c, "DELETE FROM fund_history_views WHERE chat_id=? AND user_id=?", chatId, userId); return null; });
+    }
+
+    public HistoryView moveHistory(long chatId, long userId, long updateId, int direction) {
+        return transaction(c -> {
+            var view = historyView(c, chatId, userId);
+            if (view == null || view.period().equals("menu")) throw new InputException("Сначала выбери период кнопкой «История».");
+            // Retrying an update after a failed Telegram reply must not advance the page twice.
+            if (view.updateId() == updateId) return view;
+            int pages = historyPages(historyCount(c, view));
+            int page = Math.max(0, Math.min(pages - 1, view.page() + direction));
+            var moved = new HistoryView(view.period(), view.from(), view.until(), view.maxId(), page, updateId);
+            saveHistoryView(c, chatId, userId, moved);
+            return moved;
+        });
+    }
+
+    // Entries store UTC instants. Whole-second prefixes give exact day boundaries
+    // even when the timestamps have different numbers of fractional-second digits.
+    private static final String HISTORY_WHERE = " WHERE substr(created_at,1,19)>=? AND substr(created_at,1,19)<? AND id<=?";
+
+    private void historyParameters(PreparedStatement p, HistoryView view) throws SQLException {
+        p.setString(1, UTC_SECOND.format(view.from()));
+        p.setString(2, UTC_SECOND.format(view.until()));
+        p.setLong(3, view.maxId());
+    }
+
+    private long historyCount(Connection c, HistoryView view) throws SQLException {
+        try (PreparedStatement p = c.prepareStatement("SELECT COUNT(*) FROM fund_entries" + HISTORY_WHERE)) {
+            historyParameters(p, view);
+            try (ResultSet r = p.executeQuery()) { return r.next() ? r.getLong(1) : 0; }
+        }
+    }
+
+    private static int historyPages(long count) {
+        return (int) Math.max(1, (count + HISTORY_PAGE_SIZE - 1) / HISTORY_PAGE_SIZE);
+    }
+
+    public HistoryPage historyPage(HistoryView view) {
+        return transaction(c -> {
+            long total = historyCount(c, view);
+            List<Entry> entries = new ArrayList<>();
+            try (PreparedStatement p = c.prepareStatement("SELECT * FROM fund_entries" + HISTORY_WHERE + " ORDER BY id DESC LIMIT ? OFFSET ?")) {
+                historyParameters(p, view);
+                p.setInt(4, HISTORY_PAGE_SIZE);
+                p.setLong(5, (long) view.page() * HISTORY_PAGE_SIZE);
+                try (ResultSet r = p.executeQuery()) {
+                    while (r.next()) entries.add(new Entry(r.getLong("id"), r.getLong("cents"), r.getString("kind"),
+                            r.getString("note"), new Actor(r.getLong("actor_id"), r.getString("actor_name")),
+                            Instant.parse(r.getString("created_at"))));
+                }
+            }
+            return new HistoryPage(view, entries, total, historyPages(total));
         });
     }
 

@@ -3,6 +3,7 @@ package com.baros.fund;
 import com.baros.telegram.TelegramClient.*;
 import com.baros.telegram.TelegramUpdateResponse;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 import org.slf4j.Logger;
@@ -28,16 +29,23 @@ public class FundCommandHandler {
     private final Set<Long> allowedUsers;
     private final Set<Long> allowedChats;
     private final ZoneId zone;
+    private final FundHistoryService history;
 
+    @Autowired
     public FundCommandHandler(FundLedger ledger, FundSyncService sync,
                                @Value("${fund.allowed-user-ids:}") String users,
                                @Value("${fund.allowed-chat-ids:}") String chats,
-                               @Value("${bar.time-zone}") String zone) {
+                               @Value("${bar.time-zone}") String zone, FundHistoryService history) {
         this.ledger = ledger;
         this.sync = sync;
         allowedUsers = ids(users);
         allowedChats = ids(chats);
         this.zone = ZoneId.of(zone);
+        this.history = history;
+    }
+
+    FundCommandHandler(FundLedger ledger, FundSyncService sync, String users, String chats, String zone) {
+        this(ledger, sync, users, chats, zone, new FundHistoryService(ledger, zone, 3));
     }
 
     public String handle(TelegramUpdateResponse.Update update) {
@@ -68,6 +76,13 @@ public class FundCommandHandler {
             // before interpreting the text, including after a process restart.
             var saved = ledger.manualEntry(update.updateId());
             if (saved != null) return receipt(saved.cents(), saved.note(), ledger.snapshot().balance());
+            String historyAnswer = history.handle(update.updateId(), chatId, user.id(), text);
+            if (historyAnswer != null) return historyAnswer;
+            ledger.closeHistory(chatId, user.id());
+            if (text.equals(FundHistoryService.MENU)) {
+                ledger.cancelDraft(chatId, user.id());
+                return "Главное меню · выбери действие.";
+            }
             if (text.equals(CANCEL) || command.equals("/cancel")) {
                 ledger.cancelDraft(chatId, user.id());
                 return "Ввод отменён. Новая операция не записана.";
@@ -77,7 +92,6 @@ public class FundCommandHandler {
                 ledger.cancelDraft(chatId, user.id());
             }
             if (text.equals("💰 Остаток") || command.equals("/balance")) return balance();
-            if (text.equals("📒 История") || command.equals("/history")) return history();
             if (text.equals("ℹ️ Помощь") || command.equals("/help") || command.equals("/start")) return help();
             if (text.equals("🔄 Синхронизировать") || command.equals("/sync")) {
                 try {
@@ -173,26 +187,13 @@ public class FundCommandHandler {
                 + "\nТекущая незавершённая смена в сумму ESUPL не входит.";
     }
 
-    private String history() {
-        List<FundLedger.Entry> entries = ledger.history();
-        if (entries.isEmpty()) return "Операций пока нет.\n\n" + openingHelp();
-        StringBuilder out = new StringBuilder("📒 Последние 10 операций\n");
-        for (var entry : entries) {
-            out.append("\n#").append(entry.id()).append(" · ").append(TIME.format(entry.createdAt().atZone(zone)))
-                    .append(" · ").append(entry.cents() > 0 ? "+" : "").append(FundLedger.money(entry.cents()))
-                    .append("\n").append(entry.note())
-                    .append("\n").append(entry.actor().name()).append(" [").append(entry.actor().id()).append("]\n");
-        }
-        return out.toString();
-    }
-
     private String help() {
         return "Двойка · общий фонд\n\nРасход: -20 Назначение (можно - 20).\n"
                 + "Или нажми «Расход» → отправь сумму и назначение.\n"
                 + "Или «Расход» → выбери шаблон → отправь только сумму.\n"
                 + "Сумма: 20, 20.00, 20,00; также 20.5 или 20,5.\n"
                 + "Поступление: +50 Назначение или кнопка «Поступление».\n"
-                + "/cancel — отменить ввод\n/balance — остаток\n/add 50 Пояснение — поступление\n/spend 25,50 Пояснение — расход\n/history — последние 10 операций\n/sync — сверка завершённых смен с ESUPL\n/id — ID для настройки доступа\n\n" + openingHelp();
+                + "/cancel — отменить ввод\n/balance — остаток\n/add 50 Пояснение — поступление\n/spend 25,50 Пояснение — расход\n/history — история за сегодня, неделю или месяц\n/sync — сверка завершённых смен с ESUPL\n/id — ID для настройки доступа\n\n" + openingHelp();
     }
 
     private String openingHelp() {
@@ -223,6 +224,8 @@ public class FundCommandHandler {
         var message = update.message();
         var user = message.from();
         if (user == null || user.id() == null || user.bot()) return keyboard();
+        var historyKeyboard = history.keyboardFor(message.chat().id(), user.id());
+        if (historyKeyboard != null) return historyKeyboard;
         var draft = ledger.draft(message.chat().id(), user.id());
         if (draft == null) return keyboard();
         var rows = new ArrayList<List<KeyboardButton>>();
