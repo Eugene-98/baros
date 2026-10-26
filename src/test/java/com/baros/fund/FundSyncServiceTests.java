@@ -41,18 +41,18 @@ class FundSyncServiceTests {
     }
 
     @Test void scansOnlyCompletedDaysAndImportsOnlyPaidNonDeletedPorcha() {
-        when(api.getSalesForRangeStrict(any(), any())).thenReturn(
+        when(api.getSalesForRangeStrict(any(), any(), any())).thenReturn(
                 List.of(sale(10, START, true, false, "30"), sale(11, START, false, false, "10"), sale(12, START, true, true, "20")),
                 List.of(sale(13, START.plusDays(1), true, false, "40")));
         assertThat(sync.sync(AUTHOR).balance()).isEqualTo(107_000);
-        verify(api).getSalesForRangeStrict(START.atTime(3, 0), START.plusDays(1).atTime(2, 59, 59));
-        verify(api).getSalesForRangeStrict(START.plusDays(1).atTime(3, 0), START.plusDays(2).atTime(2, 59, 59));
+        verify(api).getSalesForRangeStrict(START.atTime(3, 0), START.plusDays(1).atTime(2, 59, 59), ZoneId.of("Europe/Minsk"));
+        verify(api).getSalesForRangeStrict(START.plusDays(1).atTime(3, 0), START.plusDays(2).atTime(2, 59, 59), ZoneId.of("Europe/Minsk"));
         verifyNoMoreInteractions(api);
         assertThat(ledger.snapshot().throughDate()).isEqualTo("2026-10-06");
     }
 
     @Test void apiFailureOnLaterDayLeavesEntireLedgerUntouched() {
-        when(api.getSalesForRangeStrict(any(), any())).thenReturn(List.of(sale(10, START, true, false, "30")))
+        when(api.getSalesForRangeStrict(any(), any(), any())).thenReturn(List.of(sale(10, START, true, false, "30")))
                 .thenThrow(new IllegalStateException("API unavailable"));
         assertThatThrownBy(() -> sync.sync(AUTHOR)).isInstanceOf(IllegalStateException.class);
         assertThat(ledger.snapshot().balance()).isEqualTo(100_000);
@@ -61,7 +61,7 @@ class FundSyncServiceTests {
     }
 
     @Test void repeatedAndDeletedChecksAreReconciled() {
-        when(api.getSalesForRangeStrict(any(), any())).thenReturn(
+        when(api.getSalesForRangeStrict(any(), any(), any())).thenReturn(
                 List.of(sale(10, START, true, false, "30")), List.of(),
                 List.of(sale(10, START, true, false, "30")), List.of(),
                 List.of(sale(10, START, true, true, "30")), List.of());
@@ -71,11 +71,11 @@ class FundSyncServiceTests {
     }
 
     @Test void duplicateOrOutOfRangeChecksAbortWithoutChanges() {
-        when(api.getSalesForRangeStrict(any(), any())).thenReturn(
+        when(api.getSalesForRangeStrict(any(), any(), any())).thenReturn(
                 List.of(sale(10, START, true, false, "30"), sale(10, START, true, false, "30")));
         assertThatThrownBy(() -> sync.sync(AUTHOR)).isInstanceOf(IllegalStateException.class);
         assertThat(ledger.snapshot().balance()).isEqualTo(100_000);
-        when(api.getSalesForRangeStrict(any(), any())).thenReturn(List.of(sale(11, START.minusDays(1), true, false, "30")));
+        when(api.getSalesForRangeStrict(any(), any(), any())).thenReturn(List.of(sale(11, START.minusDays(1), true, false, "30")));
         assertThatThrownBy(() -> sync.sync(AUTHOR)).isInstanceOf(IllegalStateException.class);
     }
 
@@ -93,7 +93,7 @@ class FundSyncServiceTests {
         check = new EsuplSalesResponse.Sale(check.id(), check.orderNumber(), check.type(), check.status(), false, true,
                 check.totalSum(), check.totalDiscount(), OffsetDateTime.parse("2026-10-06T00:30:00Z"),
                 null, null, check.payments(), check.items(), check.totalDiscounts());
-        when(api.getSalesForRangeStrict(any(), any())).thenReturn(List.of(check));
+        when(api.getSalesForRangeStrict(any(), any(), any())).thenReturn(List.of(check));
         assertThatThrownBy(() -> sync.sync(AUTHOR)).isInstanceOfSatisfying(EsuplSyncException.class, e ->
                 assertThat(e.diagnostic()).contains("ESUPL_DATE_RANGE", "ID 42", "2026-10-06T00:30Z",
                         "Europe/Minsk: 2026-10-06T03:30", "2026-10-05T03:00", "2026-10-06T02:59:59"));
@@ -103,12 +103,12 @@ class FundSyncServiceTests {
 
     @Test void missingDiscountsReportCheckAndPreservePreviousImport() {
         var check = sale(42, START, true, false, "30");
-        when(api.getSalesForRangeStrict(any(), any())).thenReturn(List.of(check), List.of());
+        when(api.getSalesForRangeStrict(any(), any(), any())).thenReturn(List.of(check), List.of());
         sync.sync(AUTHOR);
         var before = ledger.snapshot();
         var incomplete = new EsuplSalesResponse.Sale(check.id(), check.orderNumber(), check.type(), check.status(), false, true,
                 check.totalSum(), check.totalDiscount(), check.eventDate(), null, null, check.payments(), check.items(), null);
-        when(api.getSalesForRangeStrict(any(), any())).thenReturn(List.of(incomplete));
+        when(api.getSalesForRangeStrict(any(), any(), any())).thenReturn(List.of(incomplete));
         assertThatThrownBy(() -> sync.sync(AUTHOR)).isInstanceOfSatisfying(EsuplSyncException.class, e ->
                 assertThat(e.diagnostic()).contains("ESUPL_DISCOUNTS_MISSING", "ID 42", "2026-10-05"));
         assertThat(ledger.snapshot()).isEqualTo(before);
@@ -116,7 +116,7 @@ class FundSyncServiceTests {
     }
 
     @Test void fractionalKopecksReportAmountErrorWithoutRoundingOrWriting() {
-        when(api.getSalesForRangeStrict(any(), any())).thenReturn(List.of(sale(42, START, true, false, "30.001")));
+        when(api.getSalesForRangeStrict(any(), any(), any())).thenReturn(List.of(sale(42, START, true, false, "30.001")));
         assertThatThrownBy(() -> sync.sync(AUTHOR)).isInstanceOfSatisfying(EsuplSyncException.class, e ->
                 assertThat(e.diagnostic()).contains("ESUPL_DISCOUNT_AMOUNT", "ID 42"));
         assertThat(ledger.snapshot().balance()).isEqualTo(100_000);

@@ -67,7 +67,7 @@ public class FundSyncService {
         for (LocalDate day = state.startDate(); !day.isAfter(through); day = day.plusDays(1)) {
             LocalDateTime start = day.atTime(dayStartHour, 0);
             LocalDateTime end = day.plusDays(1).atTime(dayStartHour, 0).minusSeconds(1);
-            for (EsuplSalesResponse.Sale sale : esupl.getSalesForRangeStrict(start, end)) {
+            for (EsuplSalesResponse.Sale sale : esupl.getSalesForRangeStrict(start, end, clock.getZone())) {
                 if (sale == null || sale.id() == null || sale.id() <= 0 || sale.eventDate() == null) {
                     throw new EsuplSyncException("ESUPL_CHECK_FIELDS", "У чека отсутствует корректный ID или event_date. Барный день: "
                             + day + "; ID: " + (sale == null ? "не указан" : sale.id()) + ".");

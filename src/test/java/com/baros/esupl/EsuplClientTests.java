@@ -68,4 +68,16 @@ class EsuplClientTests {
                                     .doesNotContain("secret-token", "customer-data", "/teams/", "http://"));
         }
     }
+
+    @Test void zonedReadStillRejectsMissingDatesAndCompletelyUnrelatedResponses() {
+        var zone = java.time.ZoneId.of("Europe/Minsk");
+        response.set("{\"data\":[{\"id\":42,\"is_paid\":true,\"is_deleted\":false}]}");
+        assertThatThrownBy(() -> client.getSalesForRangeStrict(START, START.plusDays(1).minusSeconds(1), zone))
+                .isInstanceOfSatisfying(EsuplSyncException.class,
+                        e -> assertThat(e.diagnostic()).contains("ESUPL_CHECK_FIELDS", "42"));
+        response.set("{\"data\":[{\"id\":42,\"is_paid\":true,\"is_deleted\":false,\"event_date\":\"2026-09-01T00:00:00Z\"}]}");
+        assertThatThrownBy(() -> client.getSalesForRangeStrict(START, START.plusDays(1).minusSeconds(1), zone))
+                .isInstanceOfSatisfying(EsuplSyncException.class,
+                        e -> assertThat(e.diagnostic()).contains("ESUPL_DATE_RANGE", "42"));
+    }
 }
