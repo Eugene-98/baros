@@ -59,7 +59,7 @@ class FundHistoryTests {
         seed(until, "Следующий день");
         String answer = handle(1, "/history " + period);
         assertThat(currentIds()).containsExactly(4L, 3L, 2L);
-        assertThat(answer).contains("Операций: 3", "Евгений @eugene [123]", "-20,50 BYN")
+        assertThat(answer).contains("Операций: 3", "Евгений @eugene", "-20,50 BYN")
                 .doesNotContain("До периода", "Следующий день");
         assertThat(ledger.historyView(123, 123).from()).isEqualTo(from);
     }

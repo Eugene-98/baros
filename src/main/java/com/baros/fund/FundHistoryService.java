@@ -21,7 +21,6 @@ public class FundHistoryService {
     static final String PREVIOUS = "◀️ Назад";
     static final String MENU = "⬅️ Главное меню";
     private static final DateTimeFormatter DATE = DateTimeFormatter.ofPattern("dd.MM.yyyy");
-    private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm");
     private final FundLedger ledger;
     private final Clock clock;
     private final int dayStartHour;
@@ -91,10 +90,11 @@ public class FundHistoryService {
                 + "\nОпераций: " + page.total() + " · Страница " + (view.page() + 1) + "/" + page.pages() + "\n");
         if (page.entries().isEmpty()) out.append("\nЗа этот период операций нет.\n");
         for (var entry : page.entries()) {
-            out.append("\n#").append(entry.id()).append(" · ").append(TIME.format(entry.createdAt().atZone(clock.getZone())))
-                    .append(" · ").append(entry.cents() > 0 ? "+" : "").append(FundLedger.money(entry.cents()))
-                    .append("\n").append(entry.note()).append("\n").append(entry.actor().name())
-                    .append(" [").append(entry.actor().id()).append("]\n");
+            String description = entry.kind().equals("ESUPL")
+                    ? (entry.cents() < 0 ? "Корректировка закрытого чека" : "Закрытый чек") : entry.note();
+            out.append("\n#").append(entry.id()).append(" · ").append(DATE.format(entry.createdAt().atZone(clock.getZone())))
+                    .append(" ").append(entry.cents() > 0 ? "+" : "").append(FundLedger.money(entry.cents()))
+                    .append("\n").append(description).append("\n").append(entry.actor().name()).append("\n");
         }
         out.append("\nЧтобы увидеть новые записи, выбери период ещё раз.");
         return out.toString();

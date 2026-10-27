@@ -35,7 +35,7 @@ class FundCommandHandlerTests {
         assertThat(handle(1, "/opening 1000 07.10.2026")).contains("сохранён");
         assertThat(handle(2, "/spend 25,50 Лимоны")).contains("974,50 BYN");
         assertThat(handle(2, "/spend 25,50 Лимоны")).contains("974,50 BYN");
-        assertThat(handle(3, "/history month")).contains("Евгений Жук @eugene [123]", "Лимоны");
+        assertThat(handle(3, "/history month")).contains("Евгений Жук @eugene", "Лимоны");
         assertThat(handle(4, "/opening 0 07.10.2026")).contains("уже установлен");
     }
 
