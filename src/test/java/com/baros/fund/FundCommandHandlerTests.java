@@ -173,4 +173,17 @@ class FundCommandHandlerTests {
         assertThat(handle(5, "  -20\nДлинное назначение  ")).contains("959,00 BYN");
         assertThat(handle(6, "/spend@dvoyka_bot 20 Лимоны")).contains("939,00 BYN");
     }
+
+    @Test void eightOclockOpeningAndAutoSyncReplaceTheManualButton() throws Exception {
+        ledger = new FundLedger(temp.resolve("eight.sqlite").toString(), 8);
+        commands = new FundCommandHandler(ledger, sync, "123", "", "Europe/Minsk",
+                new FundHistoryService(ledger, "Europe/Minsk", 8));
+        assertThat(handle(1, "/opening 1000 07.10.2026")).contains("08:00", "08:05").doesNotContain("03:00", "Нажми");
+        assertThat(handle(2, "/balance")).contains("08:00 — 08:00", "08:05");
+        assertThat(handle(3, "🔄 Синхронизировать")).contains("автоматически", "08:05");
+        verify(sync, never()).sync(any());
+        assertThat(FundCommandHandler.keyboard().keyboard().stream().flatMap(java.util.List::stream).map(b -> b.text()))
+                .doesNotContain("🔄 Синхронизировать");
+        assertThat(handle(4, "/help")).contains("08:00", "08:05").doesNotContain("/sync", "03:00");
+    }
 }

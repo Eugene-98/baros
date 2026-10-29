@@ -3,6 +3,9 @@ spring:
     web-application-type: none
     keep-alive: true
 
+bar:
+  day-start-hour: 8
+
 telegram:
   bot-token: ${DVOYKA_BOT_TOKEN:}
   daily-summary:

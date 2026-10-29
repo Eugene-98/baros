@@ -127,4 +127,35 @@ class FundSyncTimeRangeTests {
         assertThat(ledger.snapshot()).isEqualTo(before);
         assertThat(ledger.history()).isEqualTo(history);
     }
+
+    @ParameterizedTest
+    @EnumSource(FilterMode.class)
+    void upgradingToEightKeepsLegacyOpeningAndImportsLateChecksExactlyOnce(FilterMode mode) throws Exception {
+        start(mode);
+        syncAt("2026-10-23T12:00:00Z").sync(AUTHOR);
+        assertThat(ledger.snapshot().balance()).isEqualTo(103_500);
+        // The old version did not store the original 03:00 opening hour.
+        try (var c = java.sql.DriverManager.getConnection("jdbc:sqlite:" + temp.resolve("fund.sqlite")); var s = c.createStatement()) {
+            s.executeUpdate("DELETE FROM fund_meta WHERE key='start_hour'");
+        }
+        ledger = new FundLedger(temp.resolve("fund.sqlite").toString(), 8);
+        assertThat(ledger.snapshot().startHour()).isEqualTo(3);
+        checks.add(new Check(5, Instant.parse("2026-10-23T04:59:59.999Z"), true, 50)); // 07:59:59.999 Minsk.
+        checks.add(new Check(6, Instant.parse("2026-10-23T05:00:00Z"), true, 60)); // Exactly 08:00, next shift.
+        var updated = new FundSyncService(ledger, client,
+                Clock.fixed(Instant.parse("2026-10-23T05:05:00Z"), MINSK), 8, "Порча");
+        assertThat(updated.sync(AUTHOR).delta()).isEqualTo(11_000);
+        assertThat(ledger.snapshot().balance()).isEqualTo(114_500);
+        assertThat(ledger.snapshot().throughDate()).isEqualTo("2026-10-22");
+        assertThat(updated.sync(AUTHOR).delta()).isZero();
+        assertThat(ledger.history()).filteredOn(e -> e.kind().equals("OPENING")).singleElement()
+                .extracting(FundLedger.Entry::cents).isEqualTo(100_000L);
+        assertThat(ledger.history()).filteredOn(e -> e.kind().equals("EXPENSE")).singleElement()
+                .extracting(FundLedger.Entry::cents).isEqualTo(-500L);
+        var tomorrow = new FundSyncService(ledger, client,
+                Clock.fixed(Instant.parse("2026-10-24T05:05:00Z"), MINSK), 8, "Порча");
+        assertThat(tomorrow.sync(AUTHOR).delta()).isEqualTo(6000);
+        assertThat(ledger.snapshot().balance()).isEqualTo(120_500);
+        assertThat(tomorrow.sync(AUTHOR).delta()).isZero();
+    }
 }

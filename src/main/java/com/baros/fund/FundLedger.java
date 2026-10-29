@@ -1,6 +1,7 @@
 package com.baros.fund;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 
@@ -25,7 +26,7 @@ public class FundLedger {
         public static Actor system() { return new Actor(0, "ESUPL · автоматически"); }
     }
     public record Entry(long id, long cents, String kind, String note, Actor actor, Instant createdAt) {}
-    public record Snapshot(Long balance, LocalDate startDate, String lastSync, String throughDate) {}
+    public record Snapshot(Long balance, LocalDate startDate, String lastSync, String throughDate, int startHour) {}
     public record SaleAmount(long cents, LocalDate businessDate) {}
     public record SyncResult(long delta, int changes, long balance) {}
     public record Draft(boolean expense, String note) {}
@@ -38,8 +39,13 @@ public class FundLedger {
     }
 
     private final String url;
+    private final int dayStartHour;
 
-    public FundLedger(@Value("${fund.database}") String filename) throws Exception {
+    @Autowired
+    public FundLedger(@Value("${fund.database}") String filename,
+                      @Value("${bar.day-start-hour}") int dayStartHour) throws Exception {
+        if (dayStartHour < 0 || dayStartHour > 23) throw new IllegalArgumentException("Invalid bar-day hour");
+        this.dayStartHour = dayStartHour;
         Path path = Path.of(filename).toAbsolutePath();
         Files.createDirectories(path.getParent());
         url = "jdbc:sqlite:" + path;
@@ -73,6 +79,10 @@ public class FundLedger {
         }
     }
 
+    FundLedger(String filename) throws Exception {
+        this(filename, 3);
+    }
+
     private Connection connect() throws SQLException {
         Connection c = DriverManager.getConnection(url);
         try (Statement s = c.createStatement()) {
@@ -104,8 +114,10 @@ public class FundLedger {
     public Snapshot snapshot() {
         return transaction(c -> {
             String start = meta(c, "start_date");
+            String hour = meta(c, "start_hour");
             return new Snapshot(start == null ? null : balance(c),
-                    start == null ? null : LocalDate.parse(start), meta(c, "last_sync"), meta(c, "through_date"));
+                    start == null ? null : LocalDate.parse(start), meta(c, "last_sync"), meta(c, "through_date"),
+                    hour == null ? (start == null ? dayStartHour : 3) : Integer.parseInt(hour));
         });
     }
 
@@ -118,6 +130,7 @@ public class FundLedger {
             }
             addEntry(c, cents, "OPENING", "Начальный остаток перед барным днём " + start, actor, "tg:" + updateId);
             putMeta(c, "start_date", start.toString());
+            putMeta(c, "start_hour", Integer.toString(dayStartHour));
             return balance(c);
         });
     }

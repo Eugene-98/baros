@@ -152,4 +152,16 @@ class FundHistoryTests {
         assertThat(restarted.offset()).isEqualTo(3);
         verify(telegram, times(2)).sendMessage(eq(123L), contains("Страница 2/4"), any());
     }
+
+    @Test void eightOclockHistoryExcludesPreviousShiftAndRefreshesOldViews() throws Exception {
+        seed(Instant.parse("2026-10-28T04:59:59.999Z"), "До восьми");
+        seed(Instant.parse("2026-10-28T05:00:00Z"), "После восьми");
+        handle(1, FundHistoryService.TODAY); // Saved under the previous 03:00 boundary.
+        history = new FundHistoryService(ledger, CLOCK, 8);
+        assertThat(buttons()).doesNotContain(FundHistoryService.NEXT, FundHistoryService.PREVIOUS);
+        assertThat(handle(2, FundHistoryService.NEXT)).contains("08:00", "Выбери период");
+        assertThat(handle(3, FundHistoryService.TODAY)).contains("После восьми").doesNotContain("До восьми");
+        assertThat(currentIds()).containsExactly(2L);
+        assertThat(ledger.historyView(123, 123).from()).isEqualTo(Instant.parse("2026-10-28T05:00:00Z"));
+    }
 }

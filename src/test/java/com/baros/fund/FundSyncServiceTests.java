@@ -132,4 +132,34 @@ class FundSyncServiceTests {
         assertThat(FundSyncService.failureDescription(new RuntimeException("secret-token", new java.sql.SQLException("customer-data"))))
                 .contains("FUND_DATABASE").doesNotContain("secret-token", "customer-data");
     }
+
+    @Test void barDateRollsAtEightMinskTime() {
+        var before = new FundSyncService(ledger, api,
+                Clock.fixed(Instant.parse("2026-10-07T04:59:59Z"), ZoneId.of("Europe/Minsk")), 8, "Порча");
+        var after = new FundSyncService(ledger, api,
+                Clock.fixed(Instant.parse("2026-10-07T05:00:00Z"), ZoneId.of("Europe/Minsk")), 8, "Порча");
+        assertThat(before.currentBusinessDate()).isEqualTo(LocalDate.of(2026, 10, 6));
+        assertThat(after.currentBusinessDate()).isEqualTo(LocalDate.of(2026, 10, 7));
+    }
+
+    @Test void startupAndDailySyncUseSystemAuthorAndAreIdempotent() {
+        when(api.getSalesForRangeStrict(any(), any(), any())).thenReturn(
+                List.of(sale(10, START, true, false, "30")), List.of());
+        sync.catchUpOnStartup();
+        assertThat(ledger.snapshot().balance()).isEqualTo(103_000);
+        assertThat(ledger.history().getFirst().actor()).isEqualTo(FundLedger.Actor.system());
+        when(api.getSalesForRangeStrict(any(), any(), any())).thenReturn(
+                List.of(sale(10, START, true, false, "30")), List.of());
+        sync.scheduledSync();
+        assertThat(ledger.snapshot().balance()).isEqualTo(103_000);
+        assertThat(ledger.history()).hasSize(2);
+    }
+
+    @Test void disablingAutoSyncAlsoDisablesStartupCatchUp() {
+        var disabled = new FundSyncService(ledger, api,
+                Clock.fixed(Instant.parse("2026-10-07T05:05:00Z"), ZoneId.of("Europe/Minsk")), 8, "Порча", false);
+        disabled.catchUpOnStartup();
+        verifyNoInteractions(api);
+        assertThat(ledger.snapshot().balance()).isEqualTo(100_000);
+    }
 }

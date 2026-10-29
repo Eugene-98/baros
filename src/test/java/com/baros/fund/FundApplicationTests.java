@@ -28,5 +28,7 @@ class FundApplicationTests {
         assertThat(context.getBeansOfType(TelegramPollingService.class)).isEmpty();
         assertThat(context.getBeansOfType(DailySummaryScheduler.class)).isEmpty();
         assertThat(context.getBean(FundLedger.class).snapshot().balance()).isNull();
+        assertThat(context.getEnvironment().getProperty("bar.day-start-hour")).isEqualTo("8");
+        assertThat(context.getBean(FundLedger.class).snapshot().startHour()).isEqualTo(8);
     }
 }

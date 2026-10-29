@@ -97,4 +97,13 @@ class FundLedgerTests {
         assertThatThrownBy(() -> ledger.manual(2, 0, "Тест", AUTHOR)).isInstanceOf(FundLedger.InputException.class);
         assertThatThrownBy(() -> ledger.manual(2, 100, " ", AUTHOR)).isInstanceOf(FundLedger.InputException.class);
     }
+
+    @Test void newOpeningHourIsStoredOnceAndSurvivesConfigurationChanges() throws Exception {
+        String path = temp.resolve("new-fund.sqlite").toString();
+        var ledger = new FundLedger(path, 8);
+        ledger.opening(1, 100_000, START, AUTHOR);
+        assertThat(ledger.snapshot().startHour()).isEqualTo(8);
+        assertThat(new FundLedger(path, 3).snapshot().startHour()).isEqualTo(8);
+        assertThat(ledger.snapshot().balance()).isEqualTo(100_000);
+    }
 }

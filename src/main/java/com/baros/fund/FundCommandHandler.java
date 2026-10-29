@@ -93,7 +93,11 @@ public class FundCommandHandler {
             }
             if (text.equals("💰 Остаток") || command.equals("/balance")) return balance();
             if (text.equals("ℹ️ Помощь") || command.equals("/help") || command.equals("/start")) return help();
-            if (text.equals("🔄 Синхронизировать") || command.equals("/sync")) {
+            if (text.equals("🔄 Синхронизировать")) {
+                return "Сверка ESUPL теперь выполняется автоматически ежедневно в 08:05 по Минску. "
+                        + "Последнюю успешную сверку можно посмотреть кнопкой «Остаток».";
+            }
+            if (command.equals("/sync")) {
                 try {
                     var result = sync.sync(actor);
                     return "Синхронизация завершена.\nИзменённых чеков: " + result.changes()
@@ -124,7 +128,8 @@ public class FundCommandHandler {
                 if (date.isAfter(sync.currentBusinessDate())) throw new FundLedger.InputException("Дата отсчёта не может быть позже текущего барного дня.");
                 long balance = ledger.opening(update.updateId(), cents, date, actor);
                 return "Начальный остаток сохранён.\nОстаток: " + FundLedger.money(balance)
-                        + "\nПоступления ESUPL учитываются с " + DATE.format(date) + " в 03:00.\nНажми «Синхронизировать» для загрузки завершённых дней.";
+                        + "\nПоступления ESUPL учитываются с " + DATE.format(date) + " в " + hour(ledger.snapshot().startHour())
+                        + ".\nАвтоматическая сверка — ежедневно в 08:05 по Минску.";
             }
             if (command.equals("/add") || command.equals("/spend")) {
                 return record(update.updateId(), chatId, actor, command.equals("/spend"),
@@ -180,7 +185,9 @@ public class FundCommandHandler {
         var state = ledger.snapshot();
         if (state.balance() == null) return openingHelp();
         return "💰 Двойка: " + FundLedger.money(state.balance())
-                + "\nДата отсчёта: " + DATE.format(state.startDate())
+                + "\nДата отсчёта: " + DATE.format(state.startDate()) + " с " + hour(state.startHour())
+                + "\nБарный день: " + hour(history.dayStartHour()) + " — " + hour(history.dayStartHour()) + " следующего дня."
+                + "\nАвтоматическая сверка ESUPL: ежедневно в 08:05 по Минску."
                 + (state.lastSync() == null ? "\nESUPL ещё не синхронизирован."
                 : "\nПоследняя синхронизация: " + TIME.format(Instant.parse(state.lastSync()).atZone(zone))
                 + "\nESUPL учтён по барный день: " + DATE.format(LocalDate.parse(state.throughDate())))
@@ -193,14 +200,19 @@ public class FundCommandHandler {
                 + "Или «Расход» → выбери шаблон → отправь только сумму.\n"
                 + "Сумма: 20, 20.00, 20,00; также 20.5 или 20,5.\n"
                 + "Поступление: +50 Назначение или кнопка «Поступление».\n"
-                + "/cancel — отменить ввод\n/balance — остаток\n/add 50 Пояснение — поступление\n/spend 25,50 Пояснение — расход\n/history — история за сегодня, неделю или месяц\n/sync — сверка завершённых смен с ESUPL\n/id — ID для настройки доступа\n\n" + openingHelp();
+                + "/cancel — отменить ввод\n/balance — остаток\n/add 50 Пояснение — поступление\n/spend 25,50 Пояснение — расход\n/history — история за сегодня, неделю или месяц\n/id — ID для настройки доступа\n\n"
+                + "Барный день заканчивается в " + hour(history.dayStartHour()) + " по Минску. Сверка ESUPL — автоматически в 08:05.\n\n" + openingHelp();
     }
 
     private String openingHelp() {
         return "Первый запуск: /opening 1000 " + DATE.format(sync.currentBusinessDate())
-                + "\nЭто остаток перед началом барного дня указанной даты (03:00). "
+                + "\nЭто остаток перед началом барного дня указанной даты (" + hour(history.dayStartHour()) + "). "
                 + "Скидки ESUPL с этой даты будут прибавляться отдельно. Выбери дату так, чтобы эти суммы ещё не входили в начальный остаток. "
                 + "Начальный остаток задаётся один раз; исправления — через поступление или расход с пояснением.";
+    }
+
+    private static String hour(int value) {
+        return String.format(Locale.ROOT, "%02d:00", value);
     }
 
     private LocalDate parseDate(String text) {
@@ -216,7 +228,7 @@ public class FundCommandHandler {
         return new ReplyKeyboardMarkup(List.of(
                 List.of(new KeyboardButton("💰 Остаток"), new KeyboardButton("📒 История")),
                 List.of(new KeyboardButton("➕ Поступление"), new KeyboardButton("➖ Расход")),
-                List.of(new KeyboardButton("🔄 Синхронизировать"), new KeyboardButton("ℹ️ Помощь"))),
+                List.of(new KeyboardButton("ℹ️ Помощь"))),
                 true, false, "Выбери действие");
     }
 

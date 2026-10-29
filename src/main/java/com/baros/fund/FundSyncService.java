@@ -13,6 +13,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Profile;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -31,21 +33,28 @@ public class FundSyncService {
     private final Clock clock;
     private final int dayStartHour;
     private final Set<String> discountNames;
+    private final boolean autoSyncEnabled;
 
     @Autowired
     public FundSyncService(FundLedger ledger, EsuplClient esupl,
                            @Value("${bar.time-zone}") String zone,
                            @Value("${bar.day-start-hour}") int dayStartHour,
-                           @Value("${bar.double.discount-names}") String names) {
-        this(ledger, esupl, Clock.system(ZoneId.of(zone)), dayStartHour, names);
+                           @Value("${bar.double.discount-names}") String names,
+                           @Value("${fund.sync.cron}") String cron) {
+        this(ledger, esupl, Clock.system(ZoneId.of(zone)), dayStartHour, names, !"-".equals(cron.trim()));
     }
 
     // A fixed clock makes the bar-day boundary testable without contacting ESUPL.
     FundSyncService(FundLedger ledger, EsuplClient esupl, Clock clock, int dayStartHour, String names) {
+        this(ledger, esupl, clock, dayStartHour, names, true);
+    }
+
+    FundSyncService(FundLedger ledger, EsuplClient esupl, Clock clock, int dayStartHour, String names, boolean autoSyncEnabled) {
         this.ledger = ledger;
         this.esupl = esupl;
         this.clock = clock;
         this.dayStartHour = dayStartHour;
+        this.autoSyncEnabled = autoSyncEnabled;
         discountNames = Arrays.stream(names.split(",")).map(FundSyncService::normalize).collect(Collectors.toSet());
     }
 
@@ -58,14 +67,17 @@ public class FundSyncService {
         if (state.startDate() == null) throw new FundLedger.InputException("Сначала установи начальный остаток: /opening СУММА ДД.ММ.ГГГГ");
         LocalDate through = currentBusinessDate().minusDays(1);
         if (through.isBefore(state.startDate())) {
-            throw new FundLedger.InputException("Пока нет завершённых барных дней после даты отсчёта. Синхронизация станет доступна после 03:00.");
+            throw new FundLedger.InputException("Пока нет завершённых барных дней после даты отсчёта. Следующая граница дня — "
+                    + String.format(Locale.ROOT, "%02d:00", dayStartHour) + " по Минску.");
         }
         Map<Long, FundLedger.SaleAmount> amounts = new HashMap<>();
         Set<Long> seen = new HashSet<>();
         // Re-read completed days so edited/deleted checks are reconciled too.
         // No writes happen until every page of every day has been fetched successfully.
         for (LocalDate day = state.startDate(); !day.isAfter(through); day = day.plusDays(1)) {
-            LocalDateTime start = day.atTime(dayStartHour, 0);
+            // Keep the original opening instant when upgrading from the old 03:00 boundary.
+            // Only the first interval may be longer; subsequent shifts use the configured hour.
+            LocalDateTime start = day.atTime(day.equals(state.startDate()) ? state.startHour() : dayStartHour, 0);
             LocalDateTime end = day.plusDays(1).atTime(dayStartHour, 0).minusSeconds(1);
             for (EsuplSalesResponse.Sale sale : esupl.getSalesForRangeStrict(start, end, clock.getZone())) {
                 if (sale == null || sale.id() == null || sale.id() <= 0 || sale.eventDate() == null) {
@@ -73,7 +85,7 @@ public class FundSyncService {
                             + day + "; ID: " + (sale == null ? "не указан" : sale.id()) + ".");
                 }
                 LocalDateTime event = sale.eventDate().atZoneSameInstant(clock.getZone()).toLocalDateTime();
-                if (event.isBefore(start) || !event.isBefore(start.plusDays(1))) {
+                if (event.isBefore(start) || !event.isBefore(end.plusSeconds(1))) {
                     throw new EsuplSyncException("ESUPL_DATE_RANGE", "Чек ID " + sale.id()
                             + " находится вне запрошенного периода.\nВремя event_date: " + sale.eventDate()
                             + "; в " + clock.getZone() + ": " + event
@@ -111,12 +123,19 @@ public class FundSyncService {
         return ledger.reconcile(amounts, state.startDate(), through, actor);
     }
 
+    @EventListener(ApplicationReadyEvent.class)
+    public void catchUpOnStartup() {
+        if (autoSyncEnabled) scheduledSync();
+    }
+
     @Scheduled(cron = "${fund.sync.cron}", zone = "${bar.time-zone}")
     public void scheduledSync() {
         try {
             if (ledger.snapshot().startDate() == null) return;
             FundLedger.SyncResult result = sync(FundLedger.Actor.system());
             log.info("Fund sync completed: {} changes", result.changes());
+        } catch (FundLedger.InputException e) {
+            log.info("Fund sync deferred: no completed business day yet");
         } catch (Exception e) {
             log.error("Fund sync failed: {}", failureDescription(e));
         }
