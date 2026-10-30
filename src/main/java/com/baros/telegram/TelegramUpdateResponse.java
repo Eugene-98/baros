@@ -21,8 +21,15 @@ public record TelegramUpdateResponse(
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record Message(
             Chat chat,
-            String text
+            String text,
+            User from
     ) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record User(Long id, @JsonProperty("first_name") String firstName,
+                       @JsonProperty("last_name") String lastName, String username,
+                       @JsonProperty("is_bot") boolean bot) {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

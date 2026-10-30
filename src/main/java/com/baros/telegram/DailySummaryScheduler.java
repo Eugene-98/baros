@@ -4,10 +4,12 @@ import com.baros.sales.SalesAnalyticsService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.context.annotation.Profile;
 
 import java.util.Set;
 
 @Service
+@Profile("!dvoyka")
 public class DailySummaryScheduler {
 
     private final TelegramClient telegramClient;

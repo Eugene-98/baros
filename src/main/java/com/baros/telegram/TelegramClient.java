@@ -50,10 +50,14 @@ public class TelegramClient {
     }
 
     public void sendMessage(Long chatId, String text) {
+        sendMessage(chatId, text, mainKeyboard());
+    }
+
+    public void sendMessage(Long chatId, String text, ReplyKeyboardMarkup keyboard) {
         SendMessageRequest request = new SendMessageRequest(
                 chatId,
                 text,
-                mainKeyboard()
+                keyboard
         );
 
         webClient.post()
