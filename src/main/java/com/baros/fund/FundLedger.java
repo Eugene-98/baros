@@ -30,7 +30,11 @@ public class FundLedger {
     public record SaleAmount(long cents, LocalDate businessDate) {}
     public record SyncResult(long delta, int changes, long balance) {}
     public record Draft(boolean expense, String note) {}
-    public record HistoryView(String period, Instant from, Instant until, long maxId, int page, long updateId) {}
+    public record HistoryView(String period, Instant from, Instant until, long maxId, int page, long updateId, Long scopeUserId) {
+        public HistoryView(String period, Instant from, Instant until, long maxId, int page, long updateId) {
+            this(period, from, until, maxId, page, updateId, null);
+        }
+    }
     public record HistoryPage(HistoryView view, List<Entry> entries, long total, int pages) {}
     public static final int HISTORY_PAGE_SIZE = 7;
     private static final DateTimeFormatter UTC_SECOND = DateTimeFormatter.ofPattern("uuuu-MM-dd'T'HH:mm:ss").withZone(ZoneOffset.UTC);
@@ -76,6 +80,7 @@ public class FundLedger {
                     CREATE TABLE IF NOT EXISTS fund_sales (
                       sale_id INTEGER PRIMARY KEY, cents INTEGER NOT NULL, business_date TEXT NOT NULL)
                     """);
+            FundSchema.initialize(c);
         }
     }
 
@@ -93,9 +98,9 @@ public class FundLedger {
     }
 
     @FunctionalInterface
-    private interface Work<T> { T run(Connection c) throws SQLException; }
+    interface Work<T> { T run(Connection c) throws SQLException; }
 
-    private synchronized <T> T transaction(Work<T> work) {
+    synchronized <T> T transaction(Work<T> work) {
         try (Connection c = connect()) {
             c.setAutoCommit(false);
             try {
@@ -148,6 +153,13 @@ public class FundLedger {
             requireOpening(c);
             if (!hasSource(c, "tg:" + updateId)) {
                 addEntry(c, cents, cents > 0 ? "INCOME" : "EXPENSE", note, actor, "tg:" + updateId);
+                if (cents < 0) execute(c, """
+                        INSERT INTO fund_entry_categories(entry_id,category_id,version)
+                        SELECT e.id,t.category_id,1 FROM fund_entries e
+                        JOIN fund_template_categories t ON t.template=e.note
+                        JOIN fund_categories cat ON cat.id=t.category_id AND cat.active=1
+                        WHERE e.source_key=?
+                        """, "tg:" + updateId);
                 if (chatId != null) deleteDraft(c, chatId, actor.id());
             }
             return balance(c);
@@ -271,22 +283,26 @@ public class FundLedger {
                 return r.next() ? new HistoryView(r.getString("period"),
                         r.getString("from_at") == null ? null : Instant.parse(r.getString("from_at")),
                         r.getString("until_at") == null ? null : Instant.parse(r.getString("until_at")),
-                        r.getLong("max_id"), r.getInt("page"), r.getLong("update_id")) : null;
+                        r.getLong("max_id"), r.getInt("page"), r.getLong("update_id"), r.getObject("scope_user_id") == null ? null : r.getLong("scope_user_id")) : null;
             }
         }
     }
 
     public HistoryView openHistory(long chatId, long userId, long updateId, String period, Instant from, Instant until) {
+        return openHistory(chatId, userId, updateId, period, from, until, null);
+    }
+
+    public HistoryView openHistory(long chatId, long userId, long updateId, String period, Instant from, Instant until, Long scopeUserId) {
         if (!period.equals("menu") && (from == null || until == null || !from.isBefore(until)
                 || from.getNano() != 0 || until.getNano() != 0)) throw new IllegalArgumentException("Invalid history interval");
         return transaction(c -> {
             var old = historyView(c, chatId, userId);
-            if (old != null && old.updateId() == updateId) return old;
+            if (old != null && old.updateId() == updateId && Objects.equals(old.scopeUserId(), scopeUserId)) return old;
             long maxId;
             try (Statement s = c.createStatement(); ResultSet r = s.executeQuery("SELECT COALESCE(MAX(id),0) FROM fund_entries")) {
                 maxId = r.next() ? r.getLong(1) : 0;
             }
-            var view = new HistoryView(period, from, until, maxId, 0, updateId);
+            var view = new HistoryView(period, from, until, maxId, 0, updateId, scopeUserId);
             saveHistoryView(c, chatId, userId, view);
             deleteDraft(c, chatId, userId);
             return view;
@@ -295,11 +311,11 @@ public class FundLedger {
 
     private void saveHistoryView(Connection c, long chatId, long userId, HistoryView view) throws SQLException {
         execute(c, """
-                INSERT INTO fund_history_views VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(chat_id,user_id)
+                INSERT INTO fund_history_views(chat_id,user_id,period,from_at,until_at,max_id,page,update_id,scope_user_id) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(chat_id,user_id)
                 DO UPDATE SET period=excluded.period,from_at=excluded.from_at,until_at=excluded.until_at,
-                  max_id=excluded.max_id,page=excluded.page,update_id=excluded.update_id
+                  max_id=excluded.max_id,page=excluded.page,update_id=excluded.update_id,scope_user_id=excluded.scope_user_id
                 """, chatId, userId, view.period(), view.from() == null ? null : view.from().toString(),
-                view.until() == null ? null : view.until().toString(), view.maxId(), view.page(), view.updateId());
+                view.until() == null ? null : view.until().toString(), view.maxId(), view.page(), view.updateId(), view.scopeUserId());
     }
 
     public void closeHistory(long chatId, long userId) {
@@ -314,7 +330,7 @@ public class FundLedger {
             if (view.updateId() == updateId) return view;
             int pages = historyPages(historyCount(c, view));
             int page = Math.max(0, Math.min(pages - 1, view.page() + direction));
-            var moved = new HistoryView(view.period(), view.from(), view.until(), view.maxId(), page, updateId);
+            var moved = new HistoryView(view.period(), view.from(), view.until(), view.maxId(), page, updateId, view.scopeUserId());
             saveHistoryView(c, chatId, userId, moved);
             return moved;
         });
@@ -324,14 +340,28 @@ public class FundLedger {
     // even when the timestamps have different numbers of fractional-second digits.
     private static final String HISTORY_WHERE = " WHERE substr(created_at,1,19)>=? AND substr(created_at,1,19)<? AND id<=?";
 
+    private String historyWhere(HistoryView view) {
+        return HISTORY_WHERE + (view.scopeUserId() == null ? "" : " AND actor_id=? AND kind IN ('INCOME','EXPENSE')");
+    }
+
+    public String expenseCategory(long entryId) {
+        return transaction(c -> {
+            try (PreparedStatement p = c.prepareStatement("SELECT c.name FROM fund_entry_categories ec JOIN fund_categories c ON c.id=ec.category_id WHERE ec.entry_id=?")) {
+                p.setLong(1, entryId);
+                try (ResultSet r = p.executeQuery()) { return r.next() ? r.getString(1) : "Без категории"; }
+            }
+        });
+    }
+
     private void historyParameters(PreparedStatement p, HistoryView view) throws SQLException {
         p.setString(1, UTC_SECOND.format(view.from()));
         p.setString(2, UTC_SECOND.format(view.until()));
         p.setLong(3, view.maxId());
+        if (view.scopeUserId() != null) p.setLong(4, view.scopeUserId());
     }
 
     private long historyCount(Connection c, HistoryView view) throws SQLException {
-        try (PreparedStatement p = c.prepareStatement("SELECT COUNT(*) FROM fund_entries" + HISTORY_WHERE)) {
+        try (PreparedStatement p = c.prepareStatement("SELECT COUNT(*) FROM fund_entries" + historyWhere(view))) {
             historyParameters(p, view);
             try (ResultSet r = p.executeQuery()) { return r.next() ? r.getLong(1) : 0; }
         }
@@ -345,10 +375,10 @@ public class FundLedger {
         return transaction(c -> {
             long total = historyCount(c, view);
             List<Entry> entries = new ArrayList<>();
-            try (PreparedStatement p = c.prepareStatement("SELECT * FROM fund_entries" + HISTORY_WHERE + " ORDER BY id DESC LIMIT ? OFFSET ?")) {
+            try (PreparedStatement p = c.prepareStatement("SELECT * FROM fund_entries" + historyWhere(view) + " ORDER BY id DESC LIMIT ? OFFSET ?")) {
                 historyParameters(p, view);
-                p.setInt(4, HISTORY_PAGE_SIZE);
-                p.setLong(5, (long) view.page() * HISTORY_PAGE_SIZE);
+                p.setInt(view.scopeUserId() == null ? 4 : 5, HISTORY_PAGE_SIZE);
+                p.setLong(view.scopeUserId() == null ? 5 : 6, (long) view.page() * HISTORY_PAGE_SIZE);
                 try (ResultSet r = p.executeQuery()) {
                     while (r.next()) entries.add(new Entry(r.getLong("id"), r.getLong("cents"), r.getString("kind"),
                             r.getString("note"), new Actor(r.getLong("actor_id"), r.getString("actor_name")),
@@ -408,7 +438,7 @@ public class FundLedger {
                 cents, kind, clean(note, 200), actor.id(), actor.name(), Instant.now().toString(), source);
     }
 
-    private void execute(Connection c, String sql, Object... values) throws SQLException {
+    void execute(Connection c, String sql, Object... values) throws SQLException {
         try (PreparedStatement p = c.prepareStatement(sql)) {
             for (int i = 0; i < values.length; i++) p.setObject(i + 1, values[i]);
             p.executeUpdate();

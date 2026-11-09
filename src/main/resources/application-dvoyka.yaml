@@ -13,6 +13,7 @@ telegram:
 
 fund:
   database: ${DVOYKA_DATABASE:data/dvoyka.sqlite}
+  owner-user-ids: ${DVOYKA_OWNER_USER_IDS:}
   allowed-user-ids: ${DVOYKA_ALLOWED_USER_IDS:}
   allowed-chat-ids: ${DVOYKA_ALLOWED_CHAT_IDS:}
   sync:

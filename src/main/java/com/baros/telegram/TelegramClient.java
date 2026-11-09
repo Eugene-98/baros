@@ -36,6 +36,7 @@ public class TelegramClient {
                         .path("/bot" + botToken + "/getUpdates")
                         .queryParam("offset", offset)
                         .queryParam("timeout", 25)
+                        .queryParam("allowed_updates", "[\"message\",\"callback_query\"]")
                         .build()
                 )
                 .retrieve()
@@ -67,6 +68,23 @@ public class TelegramClient {
                 .retrieve()
                 .bodyToMono(String.class)
                 .block(Duration.ofSeconds(10));
+    }
+
+    public record InlineButton(String text, @JsonProperty("callback_data") String callbackData) {}
+    public record InlineKeyboardMarkup(@JsonProperty("inline_keyboard") List<List<InlineButton>> keyboard) {}
+    public record InlineMessageRequest(@JsonProperty("chat_id") Long chatId, String text,
+                                       @JsonProperty("reply_markup") InlineKeyboardMarkup keyboard) {}
+    public record CallbackAnswer(@JsonProperty("callback_query_id") String callbackQueryId) {}
+
+    public void sendInlineMessage(Long chatId, String text, InlineKeyboardMarkup keyboard) {
+        webClient.post().uri("/bot" + botToken + "/sendMessage").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(new InlineMessageRequest(chatId, text, keyboard)).retrieve()
+                .bodyToMono(String.class).block(Duration.ofSeconds(10));
+    }
+
+    public void answerCallback(String callbackId) {
+        webClient.post().uri("/bot" + botToken + "/answerCallbackQuery").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(new CallbackAnswer(callbackId)).retrieve().bodyToMono(String.class).block(Duration.ofSeconds(10));
     }
 
     private ReplyKeyboardMarkup mainKeyboard() {

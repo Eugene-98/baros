@@ -130,7 +130,8 @@ class FundHistoryTests {
         assertThat(ledger.draft(123, 123)).isNull();
         var back = update(5, 123, 123, "private", FundHistoryService.MENU);
         assertThat(commands.handle(back)).contains("Главное меню");
-        assertThat(commands.keyboardFor(back)).isEqualTo(FundCommandHandler.keyboard());
+        assertThat(commands.keyboardFor(back).keyboard().stream().flatMap(List::stream).map(TelegramClient.KeyboardButton::text))
+                .contains("💰 Остаток", "👥 Сотрудники").doesNotContain(FundHistoryService.TODAY, FundHistoryService.NEXT);
         assertThat(ledger.snapshot().balance()).isEqualTo(100_000);
     }
 

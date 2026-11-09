@@ -26,26 +26,39 @@ public class FundCommandHandler {
     private static final String CUSTOM = "✍️ Своё назначение";
     private final FundLedger ledger;
     private final FundSyncService sync;
-    private final Set<Long> allowedUsers;
     private final Set<Long> allowedChats;
     private final ZoneId zone;
     private final FundHistoryService history;
+    private final FundAccessService access;
+    private final FundManagementUi management;
 
     @Autowired
     public FundCommandHandler(FundLedger ledger, FundSyncService sync,
                                @Value("${fund.allowed-user-ids:}") String users,
                                @Value("${fund.allowed-chat-ids:}") String chats,
-                               @Value("${bar.time-zone}") String zone, FundHistoryService history) {
+                               @Value("${bar.time-zone}") String zone, FundHistoryService history,
+                               FundAccessService access, FundManagementUi management) {
         this.ledger = ledger;
         this.sync = sync;
-        allowedUsers = ids(users);
         allowedChats = ids(chats);
         this.zone = ZoneId.of(zone);
         this.history = history;
+        this.access = access;
+        this.management = management;
     }
 
     FundCommandHandler(FundLedger ledger, FundSyncService sync, String users, String chats, String zone) {
         this(ledger, sync, users, chats, zone, new FundHistoryService(ledger, zone, 3));
+    }
+
+    FundCommandHandler(FundLedger ledger, FundSyncService sync, String users, String chats, String zone, FundHistoryService history) {
+        this(ledger, sync, users, chats, zone, history, new FundAccessService(ledger, users, users));
+    }
+
+    private FundCommandHandler(FundLedger ledger, FundSyncService sync, String users, String chats, String zone,
+                               FundHistoryService history, FundAccessService access) {
+        this(ledger, sync, users, chats, zone, history, access,
+                new FundManagementUi(ledger, access, new FundCategoryService(ledger, access)));
     }
 
     public String handle(TelegramUpdateResponse.Update update) {
@@ -60,23 +73,39 @@ public class FundCommandHandler {
             return "Отправь команду от своего личного Telegram-аккаунта: для операций нужно сохранить автора.";
         }
         boolean privateChat = "private".equals(message.chat().type());
-        // An allowed user in an unrelated group must not disclose the fund to that group.
-        if (!(privateChat ? allowedUsers.contains(user.id()) || allowedChats.contains(message.chat().id())
-                : allowedChats.contains(message.chat().id()))) {
-            return "Доступ к «Двойке» ещё не настроен для этого чата. Команда /id покажет ID для настройки доступа.";
-        }
         if (update.updateId() == null) throw new IllegalStateException("Telegram update has no ID");
         String name = (user.firstName() == null ? "" : user.firstName())
                 + (user.lastName() == null ? "" : " " + user.lastName())
                 + (user.username() == null ? "" : " @" + user.username());
         FundLedger.Actor actor = new FundLedger.Actor(user.id(), name);
         long chatId = message.chat().id();
+        if (!privateChat && !allowedChats.contains(chatId)) return "Доступ к «Двойке» для этого чата не настроен. Открой личный диалог с ботом.";
+        var member = access.member(user.id());
+        if (member == null || !member.active()) {
+            if (privateChat && (command.equals("/request") || text.equals(FundManagementUi.REQUEST))) {
+                try { return access.request(update.updateId(), actor); }
+                catch (FundLedger.InputException e) { return e.getMessage(); }
+            }
+            return "Доступ к «Двойке» пока не предоставлен. Открой личный диалог с ботом и нажми «Запросить доступ»."
+                    + (member != null ? "\nСтатус: " + FundAccessService.roleName(member.role()) + "." : "");
+        }
+        access.observe(actor);
         try {
             // A completed guided input has already cleared its draft. Replay its saved receipt
             // before interpreting the text, including after a process restart.
             var saved = ledger.manualEntry(update.updateId());
-            if (saved != null) return receipt(saved.cents(), saved.note(), ledger.snapshot().balance());
-            String historyAnswer = history.handle(update.updateId(), chatId, user.id(), text);
+            if (saved != null && saved.actor().id() == user.id()) return receipt(saved.cents(), saved.note(), ledger.snapshot().balance());
+            if (privateChat) {
+                String managed = management.text(update.updateId(), chatId, user.id(), text);
+                if (managed != null) {
+                    ledger.cancelDraft(chatId, user.id()); ledger.closeHistory(chatId, user.id());
+                    return managed;
+                }
+            } else if (text.equals(FundManagementUi.STAFF) || text.equals(FundManagementUi.CATEGORIES)
+                    || text.equals(FundManagementUi.UNCATEGORIZED) || Set.of("/staff", "/categories", "/category").contains(command)) {
+                return "Открой этот раздел в личном диалоге с ботом.";
+            }
+            String historyAnswer = history.handle(update.updateId(), chatId, user.id(), text, !member.manages());
             if (historyAnswer != null) return historyAnswer;
             ledger.closeHistory(chatId, user.id());
             if (text.equals(FundHistoryService.MENU)) {
@@ -98,6 +127,7 @@ public class FundCommandHandler {
                         + "Последнюю успешную сверку можно посмотреть кнопкой «Остаток».";
             }
             if (command.equals("/sync")) {
+                if (!member.manages()) return "Служебная сверка доступна владельцу и управляющему. Автоматическая сверка — в 08:05.";
                 try {
                     var result = sync.sync(actor);
                     return "Синхронизация завершена.\nИзменённых чеков: " + result.changes()
@@ -122,6 +152,7 @@ public class FundCommandHandler {
             }
             String[] parts = text.split("\\s+", 3);
             if (command.equals("/opening")) {
+                if (member.role() != FundAccessService.Role.OWNER) return "Начальный остаток задаёт только владелец.";
                 if (parts.length != 3) return openingHelp();
                 long cents = FundLedger.parseMoney(parts[1], true);
                 LocalDate date = parseDate(parts[2]);
@@ -147,6 +178,7 @@ public class FundCommandHandler {
                 }
                 return record(update.updateId(), chatId, actor, draft.expense(), text, draft.note());
             }
+            if (command.equals("/request")) return "У тебя уже есть доступ к боту.";
             return help();
         } catch (FundLedger.InputException e) {
             return e.getMessage();
@@ -200,8 +232,10 @@ public class FundCommandHandler {
                 + "Или «Расход» → выбери шаблон → отправь только сумму.\n"
                 + "Сумма: 20, 20.00, 20,00; также 20.5 или 20,5.\n"
                 + "Поступление: +50 Назначение или кнопка «Поступление».\n"
-                + "/cancel — отменить ввод\n/balance — остаток\n/add 50 Пояснение — поступление\n/spend 25,50 Пояснение — расход\n/history — история за сегодня, неделю или месяц\n/id — ID для настройки доступа\n\n"
-                + "Барный день заканчивается в " + hour(history.dayStartHour()) + " по Минску. Сверка ESUPL — автоматически в 08:05.\n\n" + openingHelp();
+                + "/cancel — отменить ввод\n/balance — остаток\n/add 50 Пояснение — поступление\n/spend 25,50 Пояснение — расход\n/history — история за сегодня, неделю или месяц\n/category НОМЕР — категория расхода\n/id — свой ID\n\n"
+                + "Барный день заканчивается в " + hour(history.dayStartHour()) + " по Минску. Сверка ESUPL — автоматически в 08:05.\n"
+                + "Категорию расхода можно выбрать после записи или позднее через «Без категории».\n"
+                + "Сотрудник видит только свою историю. Доступом управляет владелец в личном диалоге с ботом.";
     }
 
     private String openingHelp() {
@@ -232,14 +266,53 @@ public class FundCommandHandler {
                 true, false, "Выбери действие");
     }
 
+    public FundManagementUi.Panel afterText(TelegramUpdateResponse.Update update) {
+        var m = update.message();
+        if (m == null || m.from() == null || m.from().id() == null || m.from().id() <= 0
+                || m.from().bot() || !"private".equals(m.chat().type())) return null;
+        var member = access.member(m.from().id());
+        if (member == null || !member.active()) return null;
+        try { return management.afterText(update.updateId(), m.from().id(), normalize(m.text())); }
+        catch (FundLedger.InputException e) { return null; }
+    }
+
+    public FundManagementUi.Panel callback(TelegramUpdateResponse.Update update) {
+        var q = update.callbackQuery();
+        if (q == null || q.from() == null || q.from().id() == null || q.from().id() <= 0 || q.from().bot()
+                || q.message() == null || q.message().chat() == null || !"private".equals(q.message().chat().type())
+                || !q.from().id().equals(q.message().chat().id())) return new FundManagementUi.Panel("Открой личный диалог с ботом.", null);
+        var member = access.member(q.from().id());
+        if (member == null || !member.active()) return new FundManagementUi.Panel("Доступ не предоставлен или отключён. Нажми /start.", null);
+        try { return management.callback(update.updateId(), q.message().chat().id(), q.from().id(), q.data()); }
+        catch (FundLedger.InputException e) { return new FundManagementUi.Panel(e.getMessage(), null); }
+    }
+
+    private static String normalize(String text) {
+        return text == null ? "" : text.replaceAll("[\\p{Zs}\\s]+", " ").trim();
+    }
+
+    public List<FundAccessService.Notification> notifications() { return access.notifications(); }
+    public void notificationResult(long id, boolean success) { access.notificationResult(id, success); }
+
+    private ReplyKeyboardMarkup mainKeyboard(FundAccessService.Member member) {
+        var rows = new ArrayList<>(keyboard().keyboard());
+        rows.add(List.of(new KeyboardButton(FundManagementUi.UNCATEGORIZED)));
+        if (member.manages()) rows.add(List.of(new KeyboardButton(FundManagementUi.CATEGORIES)));
+        if (member.role() == FundAccessService.Role.OWNER) rows.add(List.of(new KeyboardButton(FundManagementUi.STAFF)));
+        return new ReplyKeyboardMarkup(rows, true, false, "Выбери действие");
+    }
+
     public ReplyKeyboardMarkup keyboardFor(TelegramUpdateResponse.Update update) {
         var message = update.message();
         var user = message.from();
-        if (user == null || user.id() == null || user.bot()) return keyboard();
-        var historyKeyboard = history.keyboardFor(message.chat().id(), user.id());
+        if (user == null || user.id() == null || user.bot()) return new ReplyKeyboardMarkup(List.of(List.of(new KeyboardButton("/id"))), true, false, "Личный аккаунт");
+        var member = access.member(user.id());
+        if (member == null || !member.active() || (!"private".equals(message.chat().type()) && !allowedChats.contains(message.chat().id())))
+            return new ReplyKeyboardMarkup(List.of(List.of(new KeyboardButton(FundManagementUi.REQUEST)), List.of(new KeyboardButton("/id"))), true, false, "Запроси доступ в личном диалоге");
+        var historyKeyboard = history.keyboardFor(message.chat().id(), user.id(), !member.manages());
         if (historyKeyboard != null) return historyKeyboard;
         var draft = ledger.draft(message.chat().id(), user.id());
-        if (draft == null) return keyboard();
+        if (draft == null) return mainKeyboard(member);
         var rows = new ArrayList<List<KeyboardButton>>();
         if (draft.expense()) {
             for (String template : EXPENSE_TEMPLATES) rows.add(List.of(new KeyboardButton(template)));

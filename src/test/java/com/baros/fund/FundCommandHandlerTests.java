@@ -39,12 +39,15 @@ class FundCommandHandlerTests {
         assertThat(handle(4, "/opening 0 07.10.2026")).contains("уже установлен");
     }
 
-    @Test void authorizedGroupAllowsStaffButUnrelatedChatsCannotReadOrMutate() {
-        assertThat(commands.handle(update(1, 456, -1001, "supergroup", "/opening 1000 07.10.2026"))).contains("сохранён");
-        assertThat(commands.handle(update(2, 789, -1001, "supergroup", "+ 50 Возврат"))).contains("1050,00 BYN");
-        assertThat(commands.handle(update(3, 789, 789, "private", "/balance"))).contains("Доступ");
-        assertThat(commands.handle(update(4, 123, -1002, "supergroup", "/balance"))).contains("Доступ");
-        assertThat(commands.handle(update(5, 789, 789, "private", "/id"))).contains("789");
+    @Test void authorizedGroupStillRequiresPersonalApprovalAndUnrelatedChatsCannotReadOrMutate() {
+        assertThat(handle(1, "/opening 1000 07.10.2026")).contains("сохранён");
+        assertThat(commands.handle(update(2, 456, -1001, "supergroup", "+50 Нельзя"))).contains("Доступ");
+        var access = new FundAccessService(ledger, "123", "123");
+        access.request(3, new FundLedger.Actor(789, "Сотрудник"));
+        access.change(4, 123, 789, access.member(789).version(), FundAccessService.Role.EMPLOYEE);
+        assertThat(commands.handle(update(5, 789, -1001, "supergroup", "+ 50 Возврат"))).contains("1050,00 BYN");
+        assertThat(commands.handle(update(6, 123, -1002, "supergroup", "/balance"))).contains("Доступ");
+        assertThat(commands.handle(update(7, 789, 789, "private", "/id"))).contains("789");
         assertThat(ledger.snapshot().balance()).isEqualTo(105_000);
     }
 
@@ -105,8 +108,8 @@ class FundCommandHandlerTests {
         assertThat(entry.actor().id()).isEqualTo(123);
         assertThat(entry.note()).isEqualTo(template);
         assertThat(entry.cents()).isEqualTo(-2050);
-        assertThat(commands.keyboardFor(update(4, 123, 123, "private", "20,50")))
-                .isEqualTo(FundCommandHandler.keyboard());
+        assertThat(commands.keyboardFor(update(4, 123, 123, "private", "20,50")).keyboard().stream()
+                .flatMap(java.util.List::stream).map(b -> b.text())).contains("💰 Остаток", "🏷 Категории", "👥 Сотрудники").doesNotContain("❌ Отмена");
     }
 
     @Test void invalidInputKeepsDraftAndNeverRoundsOrWrites() {
@@ -144,6 +147,9 @@ class FundCommandHandlerTests {
     }
 
     @Test void groupMembersAndChatsHaveIndependentDrafts() {
+        var access = new FundAccessService(ledger, "123", "123");
+        access.request(100, new FundLedger.Actor(456, "Сотрудник"));
+        access.change(101, 123, 456, access.member(456).version(), FundAccessService.Role.EMPLOYEE);
         handle(1, "/opening 1000 07.10.2026");
         commands.handle(update(2, 123, -1001, "supergroup", "➖ Расход"));
         commands.handle(update(3, 123, -1001, "supergroup", "Хозяюшка"));

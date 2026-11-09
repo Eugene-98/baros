@@ -44,7 +44,7 @@ class FundPollingServiceTests {
         assertThat(restarted.offset()).isEqualTo(3);
         assertThat(restarted.history()).hasSize(2);
         assertThat(restarted.draft(123, 123)).isNull();
-        verify(telegram, times(2)).sendMessage(eq(123L), contains("Расход записан: 25,50 BYN"), eq(FundCommandHandler.keyboard()));
+        verify(telegram, times(2)).sendMessage(eq(123L), contains("Расход записан: 25,50 BYN"), argThat(k -> k.keyboard().stream().flatMap(java.util.List::stream).anyMatch(b -> b.text().equals("💰 Остаток"))));
     }
 
     @Test void nonMessageUpdatesAreAcknowledgedWithoutFinancialWrites() throws Exception {
@@ -55,6 +55,7 @@ class FundPollingServiceTests {
         new FundPollingService(telegram, commands, ledger).pollOnce();
         assertThat(ledger.offset()).isEqualTo(21);
         assertThat(ledger.history()).isEmpty();
-        verifyNoInteractions(commands);
+        verify(commands, never()).handle(any());
+        verify(commands, never()).callback(any());
     }
 }

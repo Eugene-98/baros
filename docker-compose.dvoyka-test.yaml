@@ -9,6 +9,7 @@ services:
       # Parallel accounting uses a real token and daily automatic reconciliation.
       ESUPL_API_TOKEN: ${ESUPL_API_TOKEN:?Set ESUPL_API_TOKEN}
       DVOYKA_BOT_TOKEN: ${DVOYKA_BOT_TOKEN:?Set the test Telegram bot token}
+      DVOYKA_OWNER_USER_IDS: ${DVOYKA_OWNER_USER_IDS:-}
       DVOYKA_ALLOWED_USER_IDS: ${DVOYKA_ALLOWED_USER_IDS:-}
       DVOYKA_ALLOWED_CHAT_IDS: ${DVOYKA_ALLOWED_CHAT_IDS:-}
       DVOYKA_DATABASE: /app/data/dvoyka-test.sqlite

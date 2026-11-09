@@ -53,10 +53,28 @@ public class FundPollingService {
                     && update.message().chat().id() != null && update.message().text() != null) {
                 String answer = commands.handle(update);
                 telegram.sendMessage(update.message().chat().id(), answer, commands.keyboardFor(update));
+                var panel = commands.afterText(update);
+                if (panel != null) telegram.sendInlineMessage(update.message().chat().id(), panel.text(), panel.keyboard());
+            } else if (update.callbackQuery() != null && update.callbackQuery().message() != null
+                    && update.callbackQuery().message().chat() != null && update.callbackQuery().message().chat().id() != null) {
+                var panel = commands.callback(update);
+                telegram.sendInlineMessage(update.callbackQuery().message().chat().id(), panel.text(), panel.keyboard());
+                try { telegram.answerCallback(update.callbackQuery().id()); }
+                catch (RuntimeException e) { log.debug("Callback dismissal failed ({})", e.getClass().getSimpleName()); }
             }
             // Commit the offset only after the operation AND reply succeed.
             // Replayed writes are deduplicated by their original Telegram update ID.
             ledger.acknowledge(update.updateId());
+        }
+        // A blocked notification recipient must not block staff operations or Telegram's offset.
+        for (var n : commands.notifications()) {
+            try {
+                telegram.sendMessage(n.chatId(), n.text(), null);
+                commands.notificationResult(n.id(), true);
+            } catch (RuntimeException e) {
+                commands.notificationResult(n.id(), false);
+                log.warn("Access notification deferred ({})", e.getClass().getSimpleName());
+            }
         }
     }
 

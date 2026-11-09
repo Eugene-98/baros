@@ -14,9 +14,14 @@ public record TelegramUpdateResponse(
     public record Update(
             @JsonProperty("update_id")
             Long updateId,
-            Message message
+            Message message,
+            @JsonProperty("callback_query") CallbackQuery callbackQuery
     ) {
+        public Update(Long updateId, Message message) { this(updateId, message, null); }
     }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record CallbackQuery(String id, User from, Message message, String data) {}
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record Message(

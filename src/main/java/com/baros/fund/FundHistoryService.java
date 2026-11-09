@@ -41,10 +41,17 @@ public class FundHistoryService {
 
     /** Null means this is not a history action. The caller checks access first. */
     public String handle(long updateId, long chatId, long userId, String text) {
+        return handle(updateId, chatId, userId, text, false);
+    }
+
+    public String handle(long updateId, long chatId, long userId, String text, boolean ownOnly) {
+        Long scope = ownOnly ? userId : null;
+        var existing = ledger.historyView(chatId, userId);
+        if (existing != null && !Objects.equals(existing.scopeUserId(), scope)) ledger.closeHistory(chatId, userId);
         String[] parts = text.split("\\s+");
         String command = parts[0].split("@", 2)[0].toLowerCase(Locale.ROOT);
         if (text.equals("📒 История") || command.equals("/history") && parts.length == 1) {
-            ledger.openHistory(chatId, userId, updateId, "menu", null, null);
+            ledger.openHistory(chatId, userId, updateId, "menu", null, null, scope);
             return "📒 История · выбери период.\n\nСегодня — текущий барный день.\n"
                     + "Неделя — с понедельника.\nМесяц — с 1-го числа.\n"
                     + "Начало барного дня: " + String.format(Locale.ROOT, "%02d:00", dayStartHour) + " по Минску.";
@@ -52,7 +59,7 @@ public class FundHistoryService {
         if (text.equals(NEXT) || text.equals(PREVIOUS)) {
             var view = ledger.historyView(chatId, userId);
             if (view != null && !matchesCurrentBoundary(view)) {
-                ledger.openHistory(chatId, userId, updateId, "menu", null, null);
+                ledger.openHistory(chatId, userId, updateId, "menu", null, null, scope);
                 return "Граница барного дня изменилась на " + String.format(Locale.ROOT, "%02d:00", dayStartHour)
                         + " по Минску. Выбери период истории заново.";
             }
@@ -79,7 +86,7 @@ public class FundHistoryService {
         };
         Instant from = first.atTime(dayStartHour, 0).atZone(clock.getZone()).toInstant();
         Instant until = today.plusDays(1).atTime(dayStartHour, 0).atZone(clock.getZone()).toInstant();
-        return render(ledger.openHistory(chatId, userId, updateId, period, from, until));
+        return render(ledger.openHistory(chatId, userId, updateId, period, from, until, scope));
     }
 
     private boolean matchesCurrentBoundary(FundLedger.HistoryView view) {
@@ -100,11 +107,13 @@ public class FundHistoryService {
                 + (first.equals(last) ? "" : " — " + DATE.format(last))
                 + "\nБарные дни с " + String.format(Locale.ROOT, "%02d:00", dayStartHour) + " · Минск."
                 + "\nПо времени записи в журнал; ESUPL — по дате сверки."
+                + (view.scopeUserId() == null ? "" : "\nТолько твои операции.")
                 + "\nОпераций: " + page.total() + " · Страница " + (view.page() + 1) + "/" + page.pages() + "\n");
         if (page.entries().isEmpty()) out.append("\nЗа этот период операций нет.\n");
         for (var entry : page.entries()) {
             String description = entry.kind().equals("ESUPL")
                     ? (entry.cents() < 0 ? "Корректировка закрытого чека" : "Закрытый чек") : entry.note();
+            if (entry.kind().equals("EXPENSE")) description += " · " + ledger.expenseCategory(entry.id());
             out.append("\n#").append(entry.id()).append(" · ").append(DATE.format(entry.createdAt().atZone(clock.getZone())))
                     .append(" ").append(entry.cents() > 0 ? "+" : "").append(FundLedger.money(entry.cents()))
                     .append("\n").append(description).append("\n").append(entry.actor().name()).append("\n");
@@ -114,8 +123,12 @@ public class FundHistoryService {
     }
 
     public ReplyKeyboardMarkup keyboardFor(long chatId, long userId) {
+        return keyboardFor(chatId, userId, false);
+    }
+
+    public ReplyKeyboardMarkup keyboardFor(long chatId, long userId, boolean ownOnly) {
         var view = ledger.historyView(chatId, userId);
-        if (view == null) return null;
+        if (view == null || !Objects.equals(view.scopeUserId(), ownOnly ? userId : null)) return null;
         List<List<KeyboardButton>> rows = new ArrayList<>();
         if (!view.period().equals("menu") && matchesCurrentBoundary(view)) {
             var page = ledger.historyPage(view);
