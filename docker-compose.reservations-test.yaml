@@ -1,0 +1,27 @@
+name: baros-reservations-test
+
+services:
+  reservations-test:
+    build: .
+    restart: unless-stopped
+    mem_limit: 512m
+    environment:
+      SPRING_PROFILES_ACTIVE: reservations
+      RESERVATION_BOT_TOKEN: ${RESERVATION_BOT_TOKEN:?Set a NEW reservation test bot token}
+      RESERVATION_OWNER_USER_IDS: ${RESERVATION_OWNER_USER_IDS:-}
+      RESERVATION_STAFF_CHAT_ID: ${RESERVATION_STAFF_CHAT_ID:-0}
+      RESERVATION_DATABASE: /app/data/reservations-test.sqlite
+      RESERVATION_TEST_MODE: "true"
+      RESERVATION_OPENING_HOUR: ${RESERVATION_OPENING_HOUR:-18}
+      RESERVATION_CLOSING_HOUR: ${RESERVATION_CLOSING_HOUR:-2}
+      RESERVATION_DURATION_MINUTES: ${RESERVATION_DURATION_MINUTES:-120}
+      RESERVATION_TABLES: "${RESERVATION_TABLES:-12:5,13:3,14:2,15:3}"
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=65.0 -XX:+ExitOnOutOfMemoryError
+      TZ: Europe/Minsk
+    volumes:
+      - ./data-reservations-test:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

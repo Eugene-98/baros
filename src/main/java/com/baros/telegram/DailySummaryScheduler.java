@@ -9,7 +9,7 @@ import org.springframework.context.annotation.Profile;
 import java.util.Set;
 
 @Service
-@Profile("!dvoyka")
+@Profile("!dvoyka & !reservations")
 public class DailySummaryScheduler {
 
     private final TelegramClient telegramClient;
