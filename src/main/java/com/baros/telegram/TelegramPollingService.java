@@ -8,7 +8,7 @@ import org.springframework.context.annotation.Profile;
 import java.util.List;
 
 @Service
-@Profile("!dvoyka")
+@Profile("!dvoyka & !reservations")
 public class TelegramPollingService {
 
     private final TelegramClient telegramClient;

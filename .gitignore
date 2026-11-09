@@ -8,6 +8,8 @@ target/
 !.env.example
 !.env.dvoyka.example
 !.env.dvoyka-test.example
+!.env.reservations-test.example
+data-reservations-test/
 data/
 data-dvoyka/
 data-dvoyka-test/

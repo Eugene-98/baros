@@ -1,0 +1,24 @@
+spring:
+  main:
+    web-application-type: none
+    keep-alive: true
+
+# This profile never starts the sales or fund poller and requires no ESUPL token.
+esupl:
+  token: ""
+telegram:
+  bot-token: ""
+  daily-summary:
+    enabled: false
+
+reservations:
+  token: ${RESERVATION_BOT_TOKEN:}
+  database: ${RESERVATION_DATABASE:data/reservations-test.sqlite}
+  owner-user-ids: ${RESERVATION_OWNER_USER_IDS:}
+  staff-chat-id: ${RESERVATION_STAFF_CHAT_ID:0}
+  test-mode: ${RESERVATION_TEST_MODE:true}
+  # Trial hours; confirm the real weekly schedule before opening public booking.
+  opening-hour: ${RESERVATION_OPENING_HOUR:18}
+  closing-hour: ${RESERVATION_CLOSING_HOUR:2}
+  duration-minutes: ${RESERVATION_DURATION_MINUTES:120}
+  tables: ${RESERVATION_TABLES:12:5,13:3,14:2,15:3}
